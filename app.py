@@ -6,27 +6,38 @@ import random
 import json
 import hashlib
 import plotly.express as px
+import requests  # 🌟 新增：用來發訊息給 Telegram 的套件
 
 st.set_page_config(page_title="VIIYASIY 唯婭心管理系統", page_icon="✨", layout="wide")
 
-# ================= 🌟 狀態初始化 =================
+# ================= 🌟 Telegram 發報秘書功能 =================
+def send_telegram_message(message):
+    try:
+        token = st.secrets["TELEGRAM_BOT_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        pass # 如果 Telegram 沒設定好或網路斷線，靜默失敗，不要影響正常結帳
+
+# ================= 🌟 狀態初始化與彈出視窗 =================
 if "show_success" not in st.session_state:
     st.session_state.show_success = False
 if "last_order_id" not in st.session_state:
     st.session_state.last_order_id = ""
 
-# ================= 🌟 訂單成功彈出視窗 (核心歸零邏輯移到這裡) =================
 @st.dialog("🎉 系統通知")
 def order_success_dialog():
     st.success(f"✅ 訂單 **[{st.session_state.last_order_id}]** 已成功送出！")
     st.write("庫存已自動扣除，歷史報表已更新。")
     
-    # 當使用者點擊「關閉視窗」時，執行清空動作
     if st.button("關閉視窗", type="primary", use_container_width=True):
-        # 1. 關閉視窗狀態
         st.session_state.show_success = False
-        
-        # 2. 強制清空所有表單記憶
         st.session_state["input_customer"] = ""
         st.session_state["input_channel"] = "IG私訊"
         st.session_state["input_singles"] = []
@@ -35,8 +46,6 @@ def order_success_dialog():
         for k in list(st.session_state.keys()):
             if k.startswith("qty_") or k.startswith("bqty_"):
                 del st.session_state[k]
-                
-        # 3. 強制重新整理畫面
         st.rerun()
 
 if st.session_state.show_success:
@@ -207,12 +216,16 @@ with tab1:
             order_id = "V-" + datetime.now().strftime("%Y%m%d-%H%M%S")
             rows_to_add = []
             
+            # 蒐集購買內容字串給 Telegram
+            items_text = []
+            
             for item in order_details_singles:
                 if is_discount:
                     item_revenue = int(round(item["price"] * item["qty"] * 0.95))
                 else:
                     item_revenue = item["price"] * item["qty"]
                 rows_to_add.append([now_str, order_id, item["prod"], int(item["qty"]), item_revenue, channel, customer, "單品"])
+                items_text.append(f"{item['prod']} x{item['qty']}")
                 
             for b_item in order_details_bundles:
                 bundle_name = b_item["bundle"]
@@ -222,11 +235,35 @@ with tab1:
                 for idx, (p_name, p_count) in enumerate(items):
                     row_amt = b_price_total if idx == 0 else 0 
                     rows_to_add.append([now_str, order_id, p_name, int(p_count * b_qty), int(row_amt), channel, customer, bundle_name])
+                items_text.append(f"📦 {bundle_name} x{b_qty}")
                 
+            # 寫入資料庫並清除快取
             ws_log.append_rows(rows_to_add)
             st.cache_data.clear()
             
-            # 🌟 這裡只負責叫出視窗，清空資料交給「關閉視窗」按鈕去執行
+            # ================= 🌟 觸發 Telegram 秘書 =================
+            try:
+                buy_list_str = " + ".join(items_text)
+                tg_msg = f"🎊 **新訂單成立** 🎊\n\n"
+                tg_msg += f"👤 客戶：`{customer}`\n"
+                tg_msg += f"🛍 內容：{buy_list_str}\n"
+                tg_msg += f"💰 總計：**${final_order_total:,}**\n"
+                tg_msg += f"🔗 通路：{channel}\n"
+                tg_msg += f"🏷 單號：`{order_id}`"
+                send_telegram_message(tg_msg)
+                
+                # 檢查最新庫存 (如果小於等於3件就發送警告)
+                df_new_sum, _ = load_all_data()
+                low_stock = df_new_sum[df_new_sum['剩餘庫存'] <= 3]
+                if not low_stock.empty:
+                    alert_msg = "🚨 **低庫存警報** 🚨\n\n"
+                    for _, row in low_stock.iterrows():
+                        alert_msg += f"⚠️ `{row['產品名稱']}` 僅剩 {row['剩餘庫存']} 件\n"
+                    send_telegram_message(alert_msg)
+            except Exception:
+                pass
+            # =========================================================
+
             st.session_state.last_order_id = order_id
             st.session_state.show_success = True
             st.rerun()
