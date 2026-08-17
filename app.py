@@ -4,16 +4,15 @@ import pandas as pd
 from datetime import datetime
 import random
 import json
-import hashlib  # 🌟 新增：Python 內建的加密套件
+import hashlib
 
-st.set_page_config(page_title="VIIYASIY 唯婭心管理系統", page_icon="✨", layout="centered")
+st.set_page_config(page_title="VIIYASIY 唯婭心管理系統", page_icon="✨", layout="wide")
 
+# ================= 🔒 系統保全門 (軍規雜湊加密版) =================
 def check_password():
-    # 嘗試從雲端讀取「加密後的密碼」，如果沒設定，就預設使用 "1234" 的加密亂碼
     try:
         CORRECT_HASH = st.secrets["APP_PASSWORD_HASH"]
     except Exception:
-        # 這是 "1234" 的 SHA-256 亂碼
         CORRECT_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4"
 
     if "authenticated" not in st.session_state:
@@ -25,9 +24,7 @@ def check_password():
         pwd_input = st.text_input("請輸入管理員密碼", type="password")
         
         if st.button("解鎖登入", type="primary"):
-            # 🌟 核心防護：將使用者輸入的密碼，立刻轉換成加密亂碼，再去比對！
             input_hash = hashlib.sha256(pwd_input.encode()).hexdigest()
-            
             if input_hash == CORRECT_HASH:
                 st.session_state["authenticated"] = True
                 st.success("解鎖成功！系統載入中...")
@@ -81,7 +78,8 @@ BUNDLE_DEFS = {
 
 st.title("✨ VIIYASIY 唯婭心 營銷系統")
 
-tab1, tab2, tab3 = st.tabs(["🛒 購物車結帳", "📊 庫存與利潤報表", "🎁 熟客抽獎 (滿3單)"])
+# 🌟 新增了第 4 個頁籤
+tab1, tab2, tab3, tab4 = st.tabs(["🛒 購物車結帳", "📊 庫存與利潤報表", "🎁 熟客抽獎", "📝 歷史訂單查詢"])
 
 with tab1:
     st.subheader("📝 建立新訂單")
@@ -236,3 +234,68 @@ with tab3:
             st.write("目前尚無有效的客戶紀錄。")
     else:
         st.write("目前尚無銷售紀錄。")
+
+# 🌟 核心升級：人類專屬的訂單明細頁籤
+with tab4:
+    st.subheader("📝 歷史訂單查詢")
+    st.write("💡 系統已自動將資料庫的零碎扣庫紀錄，重組為方便閱讀的完整訂單。")
+    
+    if not df_log.empty and '訂單編號' in df_log.columns:
+        # 篩選掉沒有訂單編號的舊資料
+        df_valid_orders = df_log[df_log['訂單編號'].astype(str).str.strip() != '']
+        
+        if not df_valid_orders.empty:
+            orders_display = []
+            # 依照訂單編號把零碎的資料綁在一起
+            grouped = df_valid_orders.groupby('訂單編號')
+            
+            for order_id, group in grouped:
+                time_str = group['交易時間'].iloc[0]
+                customer_name = group['客戶名稱/IG'].iloc[0]
+                channel_name = group['銷售通路'].iloc[0]
+                total_order_revenue = group['銷售總額'].sum()
+                
+                items_str_list = []
+                
+                # 處理單品
+                single_items = group[group['訂單類型'] == '單品']
+                for _, row in single_items.iterrows():
+                    items_str_list.append(f"{row['產品名稱']} x{row['售出數量']}")
+                
+                # 處理組合包 (反推組合包數量)
+                bundle_items = group[group['訂單類型'] != '單品']
+                if not bundle_items.empty:
+                    bundles = bundle_items['訂單類型'].unique()
+                    for b_name in bundles:
+                        b_rows = bundle_items[bundle_items['訂單類型'] == b_name]
+                        b_total = b_rows['銷售總額'].sum()
+                        
+                        b_price = BUNDLE_DEFS.get(b_name, {}).get('price', 0)
+                        if b_price > 0:
+                            b_qty = int(b_total / b_price)
+                            if b_qty == 0: b_qty = 1  # 防呆機制
+                        else:
+                            b_qty = 1
+                            
+                        items_str_list.append(f"📦 {b_name} x{b_qty}")
+                
+                # 建立這筆訂單的漂亮收據
+                orders_display.append({
+                    "交易時間": time_str,
+                    "客戶名稱/IG": customer_name,
+                    "購買內容": " + ".join(items_str_list),
+                    "實收總額": f"${total_order_revenue:,}",
+                    "通路": channel_name,
+                    "訂單編號": order_id
+                })
+                
+            df_display = pd.DataFrame(orders_display)
+            # 將訂單依照時間倒序排列 (最新的在最上面)
+            df_display = df_display.sort_values(by="交易時間", ascending=False)
+            
+            # 顯示在畫面上
+            st.dataframe(df_display, hide_index=True, width="stretch")
+        else:
+            st.info("目前尚無附帶訂單編號的紀錄。")
+    else:
+        st.info("目前尚無完整銷售紀錄。")
