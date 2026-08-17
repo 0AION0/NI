@@ -78,6 +78,14 @@ BUNDLE_DEFS = {
 
 st.title("✨ VIIYASIY 唯婭心 營銷系統")
 
+# 🌟 新增：側邊欄手動同步按鈕
+with st.sidebar:
+    st.write("🔧 管理員功能")
+    if st.button("🔄 同步最新雲端資料", use_container_width=True):
+        load_all_data.clear()  # 清空舊記憶
+        st.success("✅ 資料已與 Google 試算表同步！")
+        st.rerun()  # 重新整理網頁
+
 # 🌟 新增了第 4 個頁籤
 tab1, tab2, tab3, tab4 = st.tabs(["🛒 購物車結帳", "📊 庫存與利潤報表", "🎁 熟客抽獎", "📝 歷史訂單查詢"])
 
