@@ -5,6 +5,7 @@ from datetime import datetime
 import random
 import json
 import hashlib
+import plotly.express as px  # 🌟 新增：繪製精美互動圖表的套件
 
 st.set_page_config(page_title="VIIYASIY 唯婭心管理系統", page_icon="✨", layout="wide")
 
@@ -35,7 +36,15 @@ def check_password():
 
 check_password()
 
-# ================= 以下維持原樣，系統核心不變 =================
+# ================= 側邊欄：同步按鈕 =================
+with st.sidebar:
+    st.write("🔧 管理員功能")
+    if st.button("🔄 同步最新雲端資料", use_container_width=True):
+        st.cache_data.clear()
+        st.success("✅ 資料已與 Google 試算表同步！")
+        st.rerun()
+
+# ================= 資料庫連線與讀取 =================
 @st.cache_resource
 def get_gspread():
     try:
@@ -78,17 +87,9 @@ BUNDLE_DEFS = {
 
 st.title("✨ VIIYASIY 唯婭心 營銷系統")
 
-# 🌟 新增：側邊欄手動同步按鈕
-with st.sidebar:
-    st.write("🔧 管理員功能")
-    if st.button("🔄 同步最新雲端資料", use_container_width=True):
-        load_all_data.clear()  # 清空舊記憶
-        st.success("✅ 資料已與 Google 試算表同步！")
-        st.rerun()  # 重新整理網頁
-
-# 🌟 新增了第 4 個頁籤
 tab1, tab2, tab3, tab4 = st.tabs(["🛒 購物車結帳", "📊 庫存與利潤報表", "🎁 熟客抽獎", "📝 歷史訂單查詢"])
 
+# ----------------- 頁籤 1: 購物車結帳 -----------------
 with tab1:
     st.subheader("📝 建立新訂單")
     col_c1, col_c2 = st.columns(2)
@@ -175,12 +176,13 @@ with tab1:
                     rows_to_add.append([now_str, order_id, p_name, int(p_count * b_qty), int(row_amt), channel, customer, bundle_name])
                 
             ws_log.append_rows(rows_to_add)
-            load_all_data.clear()
+            st.cache_data.clear()
             st.success(f"✅ 訂單 [{order_id}] 已成功記錄！")
             st.rerun()
     else:
         st.info("請於上方選擇要購買的商品。")
 
+# ----------------- 頁籤 2: 庫存與利潤報表 (🌟 新增視覺化圖表) -----------------
 with tab2:
     st.subheader("📦 目前庫存狀態")
     display_df = df_summary[['產品名稱', '初始庫存', '累積售出', '剩餘庫存']].copy()
@@ -211,9 +213,38 @@ with tab2:
         col4, col5 = st.columns(2)
         col4.metric("總成立訂單數", f"{total_orders} 筆")
         col5.metric("平均客單價", f"${avg_order_value:,.0f}")
+        
+        # 🌟 數據視覺化圖表區塊
+        st.divider()
+        st.subheader("📊 營收數據分析")
+        
+        c_chart1, c_chart2 = st.columns(2)
+        
+        with c_chart1:
+            st.markdown("##### 🏆 熱銷商品排行 (數量)")
+            # 統計各商品售出數量並排序
+            df_top_items = df_log.groupby('產品名稱')['售出數量'].sum().reset_index()
+            df_top_items = df_top_items.sort_values(by='售出數量', ascending=True)
+            # 畫橫向長條圖
+            fig1 = px.bar(df_top_items, x='售出數量', y='產品名稱', orientation='h', 
+                          color='售出數量', color_continuous_scale='Purples')
+            fig1.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig1, use_container_width=True)
+
+        with c_chart2:
+            st.markdown("##### 💰 各通路營收佔比")
+            # 統計各通路總營收
+            df_channel = df_log.groupby('銷售通路')['銷售總額'].sum().reset_index()
+            # 畫圓餅圖 (甜甜圈風格)
+            fig2 = px.pie(df_channel, names='銷售通路', values='銷售總額', hole=0.4, 
+                          color_discrete_sequence=px.colors.sequential.Purples_r)
+            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig2, use_container_width=True)
+
     else:
         st.write("目前尚無銷售紀錄。")
 
+# ----------------- 頁籤 3: 客戶名單與抽獎 -----------------
 with tab3:
     st.subheader("🎉 熟客抽獎系統 (須累積滿 3 筆訂單)")
     if not df_log.empty and '訂單編號' in df_log.columns:
@@ -243,18 +274,16 @@ with tab3:
     else:
         st.write("目前尚無銷售紀錄。")
 
-# 🌟 核心升級：人類專屬的訂單明細頁籤
+# ----------------- 頁籤 4: 歷史訂單查詢 -----------------
 with tab4:
     st.subheader("📝 歷史訂單查詢")
     st.write("💡 系統已自動將資料庫的零碎扣庫紀錄，重組為方便閱讀的完整訂單。")
     
     if not df_log.empty and '訂單編號' in df_log.columns:
-        # 篩選掉沒有訂單編號的舊資料
         df_valid_orders = df_log[df_log['訂單編號'].astype(str).str.strip() != '']
         
         if not df_valid_orders.empty:
             orders_display = []
-            # 依照訂單編號把零碎的資料綁在一起
             grouped = df_valid_orders.groupby('訂單編號')
             
             for order_id, group in grouped:
@@ -265,12 +294,10 @@ with tab4:
                 
                 items_str_list = []
                 
-                # 處理單品
                 single_items = group[group['訂單類型'] == '單品']
                 for _, row in single_items.iterrows():
                     items_str_list.append(f"{row['產品名稱']} x{row['售出數量']}")
                 
-                # 處理組合包 (反推組合包數量)
                 bundle_items = group[group['訂單類型'] != '單品']
                 if not bundle_items.empty:
                     bundles = bundle_items['訂單類型'].unique()
@@ -281,13 +308,12 @@ with tab4:
                         b_price = BUNDLE_DEFS.get(b_name, {}).get('price', 0)
                         if b_price > 0:
                             b_qty = int(b_total / b_price)
-                            if b_qty == 0: b_qty = 1  # 防呆機制
+                            if b_qty == 0: b_qty = 1
                         else:
                             b_qty = 1
                             
                         items_str_list.append(f"📦 {b_name} x{b_qty}")
                 
-                # 建立這筆訂單的漂亮收據
                 orders_display.append({
                     "交易時間": time_str,
                     "客戶名稱/IG": customer_name,
@@ -298,10 +324,7 @@ with tab4:
                 })
                 
             df_display = pd.DataFrame(orders_display)
-            # 將訂單依照時間倒序排列 (最新的在最上面)
             df_display = df_display.sort_values(by="交易時間", ascending=False)
-            
-            # 顯示在畫面上
             st.dataframe(df_display, hide_index=True, width="stretch")
         else:
             st.info("目前尚無附帶訂單編號的紀錄。")
