@@ -9,23 +9,38 @@ import plotly.express as px
 
 st.set_page_config(page_title="VIIYASIY 唯婭心管理系統", page_icon="✨", layout="wide")
 
-# ================= 🌟 訂單成功彈出視窗 =================
-@st.dialog("🎉 系統通知")
-def order_success_dialog():
-    st.success(f"✅ 訂單 **[{st.session_state.last_order_id}]** 已成功送出！")
-    st.write("庫存已自動扣除，歷史報表已更新。")
-    if st.button("關閉視窗", type="primary", use_container_width=True):
-        st.session_state.show_success = False
-        st.rerun()
-
+# ================= 🌟 狀態初始化 =================
 if "show_success" not in st.session_state:
     st.session_state.show_success = False
 if "last_order_id" not in st.session_state:
     st.session_state.last_order_id = ""
 
+# ================= 🌟 訂單成功彈出視窗 (核心歸零邏輯移到這裡) =================
+@st.dialog("🎉 系統通知")
+def order_success_dialog():
+    st.success(f"✅ 訂單 **[{st.session_state.last_order_id}]** 已成功送出！")
+    st.write("庫存已自動扣除，歷史報表已更新。")
+    
+    # 當使用者點擊「關閉視窗」時，執行清空動作
+    if st.button("關閉視窗", type="primary", use_container_width=True):
+        # 1. 關閉視窗狀態
+        st.session_state.show_success = False
+        
+        # 2. 強制清空所有表單記憶
+        st.session_state["input_customer"] = ""
+        st.session_state["input_channel"] = "IG私訊"
+        st.session_state["input_singles"] = []
+        st.session_state["input_bundles"] = []
+        
+        for k in list(st.session_state.keys()):
+            if k.startswith("qty_") or k.startswith("bqty_"):
+                del st.session_state[k]
+                
+        # 3. 強制重新整理畫面
+        st.rerun()
+
 if st.session_state.show_success:
     order_success_dialog()
-
 
 # ================= 🔒 系統保全門 =================
 def check_password():
@@ -120,10 +135,8 @@ with tab1:
     
     col_c1, col_c2 = st.columns(2)
     with col_c1:
-        # 🌟 加上 key
         customer = st.text_input("客戶名稱 / IG (必填)", placeholder="例如: @amy_123", key="input_customer")
     with col_c2:
-        # 🌟 加上 key
         channel = st.selectbox("銷售通路", ["IG私訊", "賣貨便", "蝦皮", "親友/面交"], key="input_channel")
     
     st.divider()
@@ -213,13 +226,7 @@ with tab1:
             ws_log.append_rows(rows_to_add)
             st.cache_data.clear()
             
-            # ================= 🌟 核心升級：送出後刪除所有輸入記憶 =================
-            keys_to_clear = ["input_customer", "input_channel", "input_singles", "input_bundles"]
-            for k in list(st.session_state.keys()):
-                if k in keys_to_clear or k.startswith("qty_") or k.startswith("bqty_"):
-                    del st.session_state[k]
-            # =========================================================================
-
+            # 🌟 這裡只負責叫出視窗，清空資料交給「關閉視窗」按鈕去執行
             st.session_state.last_order_id = order_id
             st.session_state.show_success = True
             st.rerun()
