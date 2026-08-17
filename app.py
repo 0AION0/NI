@@ -5,11 +5,29 @@ from datetime import datetime
 import random
 import json
 import hashlib
-import plotly.express as px  # 🌟 新增：繪製精美互動圖表的套件
+import plotly.express as px
 
 st.set_page_config(page_title="VIIYASIY 唯婭心管理系統", page_icon="✨", layout="wide")
 
-# ================= 🔒 系統保全門 (軍規雜湊加密版) =================
+# ================= 🌟 訂單成功彈出視窗 =================
+@st.dialog("🎉 系統通知")
+def order_success_dialog():
+    st.success(f"✅ 訂單 **[{st.session_state.last_order_id}]** 已成功送出！")
+    st.write("庫存已自動扣除，歷史報表已更新。")
+    if st.button("關閉視窗", type="primary", use_container_width=True):
+        st.session_state.show_success = False
+        st.rerun()
+
+if "show_success" not in st.session_state:
+    st.session_state.show_success = False
+if "last_order_id" not in st.session_state:
+    st.session_state.last_order_id = ""
+
+if st.session_state.show_success:
+    order_success_dialog()
+
+
+# ================= 🔒 系統保全門 =================
 def check_password():
     try:
         CORRECT_HASH = st.secrets["APP_PASSWORD_HASH"]
@@ -87,45 +105,62 @@ BUNDLE_DEFS = {
 
 st.title("✨ VIIYASIY 唯婭心 營銷系統")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🛒 購物車結帳", "📊 庫存與利潤報表", "🎁 熟客抽獎", "📝 歷史訂單查詢"])
+tab1, tab2, tab3, tab4 = st.tabs(["🛒 快速結帳", "📊 庫存與利潤報表", "🎁 熟客抽獎", "📝 歷史訂單查詢"])
 
 # ----------------- 頁籤 1: 購物車結帳 -----------------
 with tab1:
-    st.subheader("📝 建立新訂單")
-    col_c1, col_c2 = st.columns(2)
-    with col_c1:
-        customer = st.text_input("客戶名稱 / IG (必填)", placeholder="例如: @amy_123")
-    with col_c2:
-        channel = st.selectbox("銷售通路", ["IG私訊", "賣貨便", "蝦皮", "親友/面交"])
+    st.markdown("### 🛍️ VIIYASIY 官方訂購區")
+    
+    st.markdown("""
+    **品牌名稱** ：VIIYASIY 唯婭心  
+    **結帳方式** ：信用卡 \ 無卡分期 \ 貨到付款 \ 行動支付 \ 超商付款 \ ATM  
+    **配送方式** ：🚚 快速到貨 / 離島配送 / 超商取貨
+    """)
     st.divider()
     
-    st.markdown("#### 🛍️ 第一部分：單品自選 (滿3件享95折)")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        # 🌟 加上 key
+        customer = st.text_input("客戶名稱 / IG (必填)", placeholder="例如: @amy_123", key="input_customer")
+    with col_c2:
+        # 🌟 加上 key
+        channel = st.selectbox("銷售通路", ["IG私訊", "賣貨便", "蝦皮", "親友/面交"], key="input_channel")
+    
+    st.divider()
+    
     product_list = df_summary['產品名稱'].tolist()
-    selected_singles = st.multiselect("請選擇單品 (可複選)", product_list)
+    try:
+        selected_singles = st.pills("📦 **選擇單品 (滿3件享95折，可複選)：**", product_list, selection_mode="multi", key="input_singles")
+    except AttributeError:
+        selected_singles = st.multiselect("📦 **選擇單品 (滿3件享95折，可複選)：**", product_list, key="input_singles")
     
     order_details_singles = []
     total_single_qty = 0
     original_single_total = 0
     
     if selected_singles:
+        st.write("👇 請設定數量：")
         for prod in selected_singles:
             unit_price = int(df_summary.loc[df_summary['產品名稱'] == prod, '零售價'].values[0])
-            qty = st.number_input(f"👉 {prod} (單價 ${unit_price:,})", min_value=1, value=1, step=1, key=f"qty_{prod}")
+            qty = st.number_input(f"{prod} (單價 ${unit_price:,})", min_value=1, value=1, step=1, key=f"qty_{prod}")
             total_single_qty += qty
             original_single_total += unit_price * qty
             order_details_singles.append({"prod": prod, "qty": qty, "price": unit_price})
             
     st.divider()
     
-    st.markdown("#### 🎁 第二部分：常態優惠組合")
-    selected_bundles = st.multiselect("請選擇組合包 (可複選)", list(BUNDLE_DEFS.keys()))
+    try:
+        selected_bundles = st.pills("🎁 **選擇優惠組合包 (可複選)：**", list(BUNDLE_DEFS.keys()), selection_mode="multi", key="input_bundles")
+    except AttributeError:
+        selected_bundles = st.multiselect("🎁 **選擇優惠組合包 (可複選)：**", list(BUNDLE_DEFS.keys()), key="input_bundles")
     
     order_details_bundles = []
     total_bundle_price = 0
     if selected_bundles:
+        st.write("👇 請設定組合數量：")
         for bundle in selected_bundles:
             b_price = BUNDLE_DEFS[bundle]["price"]
-            b_qty = st.number_input(f"👉 {bundle}", min_value=1, value=1, step=1, key=f"bqty_{bundle}")
+            b_qty = st.number_input(f"{bundle}", min_value=1, value=1, step=1, key=f"bqty_{bundle}")
             total_bundle_price += b_price * b_qty
             order_details_bundles.append({"bundle": bundle, "qty": b_qty, "price": b_price})
 
@@ -148,9 +183,9 @@ with tab1:
             st.info(f"☑️ 組合包總額：**${total_bundle_price:,}**")
             
         final_order_total = final_single_total + total_bundle_price
-        st.markdown(f"### 🚩 本單應收總額：${final_order_total:,}")
+        st.markdown(f"<h2 style='color: #E60044;'>本單應收總額：${final_order_total:,}</h2>", unsafe_allow_html=True)
         
-        if st.button("確認送出完整訂單", type="primary"):
+        if st.button("確認送出訂單", type="primary"):
             if not customer:
                 st.warning("⚠️ 請記得填寫客戶名稱，否則客人無法累積抽獎資格喔！")
                 st.stop()
@@ -177,12 +212,21 @@ with tab1:
                 
             ws_log.append_rows(rows_to_add)
             st.cache_data.clear()
-            st.success(f"✅ 訂單 [{order_id}] 已成功記錄！")
+            
+            # ================= 🌟 核心升級：送出後刪除所有輸入記憶 =================
+            keys_to_clear = ["input_customer", "input_channel", "input_singles", "input_bundles"]
+            for k in list(st.session_state.keys()):
+                if k in keys_to_clear or k.startswith("qty_") or k.startswith("bqty_"):
+                    del st.session_state[k]
+            # =========================================================================
+
+            st.session_state.last_order_id = order_id
+            st.session_state.show_success = True
             st.rerun()
     else:
-        st.info("請於上方選擇要購買的商品。")
+        st.info("請於上方點擊按鈕選擇要購買的商品。")
 
-# ----------------- 頁籤 2: 庫存與利潤報表 (🌟 新增視覺化圖表) -----------------
+# ----------------- 頁籤 2: 庫存與利潤報表 -----------------
 with tab2:
     st.subheader("📦 目前庫存狀態")
     display_df = df_summary[['產品名稱', '初始庫存', '累積售出', '剩餘庫存']].copy()
@@ -214,18 +258,14 @@ with tab2:
         col4.metric("總成立訂單數", f"{total_orders} 筆")
         col5.metric("平均客單價", f"${avg_order_value:,.0f}")
         
-        # 🌟 數據視覺化圖表區塊
         st.divider()
         st.subheader("📊 營收數據分析")
-        
         c_chart1, c_chart2 = st.columns(2)
         
         with c_chart1:
             st.markdown("##### 🏆 熱銷商品排行 (數量)")
-            # 統計各商品售出數量並排序
             df_top_items = df_log.groupby('產品名稱')['售出數量'].sum().reset_index()
             df_top_items = df_top_items.sort_values(by='售出數量', ascending=True)
-            # 畫橫向長條圖
             fig1 = px.bar(df_top_items, x='售出數量', y='產品名稱', orientation='h', 
                           color='售出數量', color_continuous_scale='Purples')
             fig1.update_layout(margin=dict(l=0, r=0, t=30, b=0))
@@ -233,14 +273,11 @@ with tab2:
 
         with c_chart2:
             st.markdown("##### 💰 各通路營收佔比")
-            # 統計各通路總營收
             df_channel = df_log.groupby('銷售通路')['銷售總額'].sum().reset_index()
-            # 畫圓餅圖 (甜甜圈風格)
             fig2 = px.pie(df_channel, names='銷售通路', values='銷售總額', hole=0.4, 
                           color_discrete_sequence=px.colors.sequential.Purples_r)
             fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig2, use_container_width=True)
-
     else:
         st.write("目前尚無銷售紀錄。")
 
@@ -281,7 +318,6 @@ with tab4:
     
     if not df_log.empty and '訂單編號' in df_log.columns:
         df_valid_orders = df_log[df_log['訂單編號'].astype(str).str.strip() != '']
-        
         if not df_valid_orders.empty:
             orders_display = []
             grouped = df_valid_orders.groupby('訂單編號')
@@ -293,7 +329,6 @@ with tab4:
                 total_order_revenue = group['銷售總額'].sum()
                 
                 items_str_list = []
-                
                 single_items = group[group['訂單類型'] == '單品']
                 for _, row in single_items.iterrows():
                     items_str_list.append(f"{row['產品名稱']} x{row['售出數量']}")
@@ -311,7 +346,6 @@ with tab4:
                             if b_qty == 0: b_qty = 1
                         else:
                             b_qty = 1
-                            
                         items_str_list.append(f"📦 {b_name} x{b_qty}")
                 
                 orders_display.append({
