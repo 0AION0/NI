@@ -5,11 +5,12 @@ import pandas as pd
 from datetime import datetime
 import os
 import json
-import urllib.parse
+import random
+import time
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================= 0. 保持雲端喚醒 (Render 專用) =================
+# ================= 0. 保持雲端喚醒 (Render & UptimeRobot 專用) =================
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -46,7 +47,7 @@ except Exception as e:
 
 # ================= 🔐 2. 門禁安全系統 =================
 AUTHORIZED_USERS = set()
-# 🌟 終極安全寫法：拔除預設密碼，絕對只認 Render 上的環境變數
+# 🌟 絕對只認 Render 上的環境變數
 ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD") 
 
 def is_authorized(chat_id):
@@ -57,21 +58,20 @@ def show_main_menu(message):
     """顯示底部主選單 (解鎖後才呼叫)"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
-    markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("❓ 系統說明"))
+    markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("🎉 幸運抽獎"))
+    markup.add(KeyboardButton("❓ 系統說明"))
     bot.send_message(message.chat.id, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
 
-# 接聽密碼的處理中心
 def process_password(message):
+    """接聽密碼的處理中心"""
     chat_id = message.chat.id
     entered_password = message.text.strip()
     
-    # 檢查密碼是否正確，並且確認雲端有設定好密碼
     if ACCESS_PASSWORD and entered_password == ACCESS_PASSWORD:
         AUTHORIZED_USERS.add(chat_id)
         bot.reply_to(message, "✅ <b>登入成功！身分已確認。</b>", parse_mode="HTML")
-        show_main_menu(message) # 登入成功，幫他把底部主選單叫出來
+        show_main_menu(message) 
     else:
-        # 密碼錯誤，給他一個「重新登入」的按鈕
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 重新嘗試登入", callback_data="start_login"))
         bot.reply_to(message, "❌ <b>密碼錯誤或系統未設定密碼！</b>\n請確認後再試一次。", reply_markup=markup, parse_mode="HTML")
@@ -84,7 +84,6 @@ user_checkout_data = {}
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     if not is_authorized(message.chat.id):
-        # 🌟 如果沒登入，給他「登入按鈕」
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔐 點擊輸入密碼登入", callback_data="start_login"))
         bot.reply_to(message, "🛑 <b>系統已鎖定！</b>\n您沒有權限操作此系統，請先登入：", reply_markup=markup, parse_mode="HTML")
@@ -92,7 +91,7 @@ def send_welcome(message):
         
     show_main_menu(message)
 
-@bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "❓ 系統說明"])
+@bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "🎉 幸運抽獎", "❓ 系統說明"])
 def handle_menu_buttons(message):
     if not is_authorized(message.chat.id):
         markup = InlineKeyboardMarkup()
@@ -107,6 +106,8 @@ def handle_menu_buttons(message):
         check_stock(message)
     elif text == "📈 營收報表":
         check_report(message)
+    elif text == "🎉 幸運抽獎":
+        draw_lottery(message)
     elif text == "❓ 系統說明":
         send_welcome(message)
 
@@ -125,54 +126,84 @@ def check_stock(message):
 
 def check_report(message):
     try:
-        # 1. 讀取數據
         df_log = pd.DataFrame(ws_log.get_all_records())
         df_sum = pd.DataFrame(ws_summary.get_all_records())
         if df_log.empty:
             bot.reply_to(message, "目前還沒有任何銷售紀錄喔！")
             return
 
-        # 2. 安全轉換資料格式
         df_log['銷售總額'] = pd.to_numeric(df_log['銷售總額'], errors='coerce').fillna(0)
         df_log['售出數量'] = pd.to_numeric(df_log['售出數量'], errors='coerce').fillna(0)
         
-        # 3. 計算財務總數據
         total_revenue = df_log['銷售總額'].sum()
         df_merged = pd.merge(df_log, df_sum[['產品名稱', '進貨成本']], on='產品名稱', how='left')
         df_merged['進貨成本'] = pd.to_numeric(df_merged['進貨成本'], errors='coerce').fillna(0)
         total_cost = (df_merged['售出數量'] * df_merged['進貨成本']).sum()
         net_profit = total_revenue - total_cost
         
-        # 4. 準備上半部文字
         reply_text = (f"📈 <b>【營收利潤戰情版】</b>\n\n"
                       f"💰 累積總營收：<code>${total_revenue:,.0f}</code>\n"
                       f"📦 總出貨成本：<code>${total_cost:,.0f}</code>\n"
                       f"🏆 目前淨利潤：<code>${net_profit:,.0f}</code>\n\n"
                       f"🔥 <b>【熱銷商品排行 (數量)】</b>\n")
 
-        # 5. 運算熱銷排行 (依據產品名稱分組，加總售出數量，並由大到小排序)
         sales_ranking = df_log.groupby('產品名稱')['售出數量'].sum().reset_index()
         sales_ranking = sales_ranking.sort_values(by='售出數量', ascending=False)
 
-        # 6. 加上獎牌並產生排行文字
         medals = ["🥇", "🥈", "🥉"]
         rank_idx = 0
         
         for _, row in sales_ranking.iterrows():
             prod_name = row['產品名稱']
             qty = int(row['售出數量'])
-            
-            if qty > 0:  # 只顯示有賣出的商品
-                # 前三名給獎牌，四名之後給一般點點
+            if qty > 0: 
                 icon = medals[rank_idx] if rank_idx < 3 else "▪️"
                 reply_text += f"{icon} {prod_name}：<code>{qty}</code> 件\n"
                 rank_idx += 1
 
-        # 7. 發送純文字報表
         bot.reply_to(message, reply_text, parse_mode="HTML")
-
     except Exception as e:
         bot.reply_to(message, f"查詢報表失敗：{e}")
+
+def draw_lottery(message):
+    try:
+        df_log = pd.DataFrame(ws_log.get_all_records())
+        if df_log.empty:
+            bot.reply_to(message, "目前還沒有任何銷售紀錄，無法進行抽獎喔！")
+            return
+            
+        # 假設你的試算表欄位名稱叫做 '客戶' 或包含客戶資訊的欄位
+        customer_column = '客戶' 
+        if customer_column in df_log.columns:
+            customers = df_log[customer_column].dropna().unique().tolist()
+        else:
+            bot.reply_to(message, "⚠️ 試算表中找不到『客戶』欄位，請確認銷售紀錄表的標題。")
+            return
+
+        customers = [str(c).strip() for c in customers if str(c).strip() != ""]
+
+        if not customers:
+            bot.reply_to(message, "沒有找到有效的客戶名單可以抽獎！")
+            return
+
+        bot.send_message(message.chat.id, "🎰 <b>系統正在從資料庫撈取名單抽獎...</b>", parse_mode="HTML")
+        dice_msg = bot.send_dice(message.chat.id, emoji='🎰')
+        
+        time.sleep(3.5)
+        
+        winner = random.choice(customers)
+        
+        bot.send_message(
+            message.chat.id, 
+            f"🎊 <b>抽獎結果出爐！</b> 🎊\n\n"
+            f"恭喜本次的幸運得主是：\n"
+            f"🏆 <code>{winner}</code>\n\n"
+            f"趕快去私訊他領獎吧！", 
+            reply_to_message_id=dice_msg.message_id,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        bot.reply_to(message, f"抽獎發生錯誤：{e}")
 
 def show_shop(message):
     chat_id = message.chat.id
@@ -201,12 +232,10 @@ def handle_query(call):
     chat_id = call.message.chat.id
     data = call.data
     
-    # 🌟 攔截未登入的點擊 (除了點擊「登入按鈕」本身)
     if not is_authorized(chat_id) and data != "start_login":
         bot.answer_callback_query(call.id, "🛑 系統已鎖定！請先完成登入程序。", show_alert=True)
         return
 
-    # 🌟 動作：引導輸入密碼
     if data == "start_login":
         msg = bot.send_message(chat_id, "✍️ <b>請直接打字輸入您的登入密碼：</b>", parse_mode="HTML")
         bot.register_next_step_handler(msg, process_password)
@@ -307,7 +336,7 @@ def process_customer_name(message):
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (按鈕登入版) 啟動中...")
+    print("🤖 雲端版機器人 (完美終極版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
