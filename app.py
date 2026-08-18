@@ -329,9 +329,9 @@ with tab2:
 with tab3:
     st.subheader("🎉 熟客抽獎系統 (須累積滿 3 筆訂單)")
     if not df_log.empty and '訂單編號' in df_log.columns:
-        df_valid = df_log[df_log['客戶名稱/IG'].astype(str).str.strip() != '']
+        df_valid = df_log[df_log['客戶'].astype(str).str.strip() != '']
         if not df_valid.empty:
-            order_counts = df_valid.groupby('客戶名稱/IG')['訂單編號'].nunique()
+            order_counts = df_valid.groupby('客戶')['訂單編號'].nunique()
             eligible_customers = order_counts[order_counts >= 3].index.tolist()
             
             st.write(f"📊 目前共有 **{len(order_counts)}** 位客戶。")
