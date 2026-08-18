@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 import os
 import json
+import urllib.parse
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -124,19 +125,61 @@ def check_stock(message):
 
 def check_report(message):
     try:
+        # 1. 讀取數據
         df_log = pd.DataFrame(ws_log.get_all_records())
         df_sum = pd.DataFrame(ws_summary.get_all_records())
         if df_log.empty:
             bot.reply_to(message, "目前還沒有任何銷售紀錄喔！")
             return
+
+        # 2. 安全轉換資料格式 (確保數字可以被計算)
+        df_log['銷售總額'] = pd.to_numeric(df_log['銷售總額'], errors='coerce').fillna(0)
+        df_log['售出數量'] = pd.to_numeric(df_log['售出數量'], errors='coerce').fillna(0)
+        
+        # 3. 計算總營收與利潤
         total_revenue = df_log['銷售總額'].sum()
         df_merged = pd.merge(df_log, df_sum[['產品名稱', '進貨成本']], on='產品名稱', how='left')
+        df_merged['進貨成本'] = pd.to_numeric(df_merged['進貨成本'], errors='coerce').fillna(0)
         total_cost = (df_merged['售出數量'] * df_merged['進貨成本']).sum()
         net_profit = total_revenue - total_cost
         
-        reply = (f"📈 <b>【營收利潤戰情版】</b>\n\n💰 累積總營收：<code>${total_revenue:,}</code>\n"
-                 f"📦 總出貨成本：<code>${total_cost:,}</code>\n🏆 目前淨利潤：<code>${net_profit:,}</code>")
-        bot.reply_to(message, reply, parse_mode="HTML")
+        reply_text = (f"📈 <b>【營收利潤戰情版】</b>\n\n"
+                      f"💰 累積總營收：<code>${total_revenue:,.0f}</code>\n"
+                      f"📦 總出貨成本：<code>${total_cost:,.0f}</code>\n"
+                      f"🏆 目前淨利潤：<code>${net_profit:,.0f}</code>")
+
+        # 4. 準備圖表數據 (分組統計各產品的累積銷售額)
+        revenue_by_product = df_log.groupby('產品名稱')['銷售總額'].sum().reset_index()
+        labels = revenue_by_product['產品名稱'].tolist()
+        data = revenue_by_product['銷售總額'].tolist()
+
+        # 5. 撰寫圖表外觀設定 (Chart.js 格式的長條圖)
+        chart_config = {
+            "type": "bar",
+            "data": {
+                "labels": labels,
+                "datasets": [{
+                    "label": "營收 ($)",
+                    "data": data,
+                    "backgroundColor": "rgba(54, 162, 235, 0.6)", # 藍色半透明
+                    "borderColor": "rgba(54, 162, 235, 1)",
+                    "borderWidth": 1
+                }]
+            },
+            "options": {
+                "title": {"display": True, "text": "各產品累積營收排行榜"},
+                "legend": {"display": False} # 隱藏圖例讓畫面更簡潔
+            }
+        }
+        
+        # 6. 呼叫雲端畫圖神器，並生成圖片網址
+        encoded_config = urllib.parse.quote(json.dumps(chart_config))
+        # 產生白底(bkg=white) 寬600 高400 的圖片
+        chart_url = f"https://quickchart.io/chart?c={encoded_config}&w=600&h=400&bkg=white"
+
+        # 7. 將圖片與剛剛算好的文字報表，一起發送到聊天室！
+        bot.send_photo(message.chat.id, photo=chart_url, caption=reply_text, parse_mode="HTML")
+
     except Exception as e:
         bot.reply_to(message, f"查詢報表失敗：{e}")
 
