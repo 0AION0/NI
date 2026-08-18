@@ -23,7 +23,7 @@ def run_dummy_server():
 
 Thread(target=run_dummy_server, daemon=True).start()
 
-# ================= 1. 系統設定 (支援雲端與本機) =================
+# ================= 1. 系統設定 =================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 bot = telebot.TeleBot(TOKEN)
 
@@ -43,47 +43,60 @@ try:
 except Exception as e:
     print(f"❌ 資料庫連線失敗：{e}")
 
-# ================= 🔐 2. 門禁安全系統 (員工身分認證) =================
-# 用來記錄已經成功登入的員工 ID
+# ================= 🔐 2. 門禁安全系統 =================
 AUTHORIZED_USERS = set()
-# 系統預設密碼 (你可以把 8888 改成你想要的數字)
-ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD")
-
-@bot.message_handler(commands=['login'])
-def handle_login(message):
-    chat_id = message.chat.id
-    text = message.text.strip().split()
-    
-    if len(text) == 2 and text[1] == ACCESS_PASSWORD:
-        AUTHORIZED_USERS.add(chat_id)
-        bot.reply_to(message, "✅ <b>登入成功！</b>\n您已獲得系統操作權限。\n請點擊 /start 喚醒主選單。", parse_mode="HTML")
-    else:
-        bot.reply_to(message, "❌ <b>密碼錯誤！</b>\n請輸入正確格式，例如：<code>/login 8888</code>", parse_mode="HTML")
+# 🌟 終極安全寫法：拔除預設密碼，絕對只認 Render 上的環境變數
+ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD") 
 
 def is_authorized(chat_id):
     """檢查該用戶是否已經登入"""
     return chat_id in AUTHORIZED_USERS
 
+def show_main_menu(message):
+    """顯示底部主選單 (解鎖後才呼叫)"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
+    markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("❓ 系統說明"))
+    bot.send_message(message.chat.id, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
+
+# 接聽密碼的處理中心
+def process_password(message):
+    chat_id = message.chat.id
+    entered_password = message.text.strip()
+    
+    # 檢查密碼是否正確，並且確認雲端有設定好密碼
+    if ACCESS_PASSWORD and entered_password == ACCESS_PASSWORD:
+        AUTHORIZED_USERS.add(chat_id)
+        bot.reply_to(message, "✅ <b>登入成功！身分已確認。</b>", parse_mode="HTML")
+        show_main_menu(message) # 登入成功，幫他把底部主選單叫出來
+    else:
+        # 密碼錯誤，給他一個「重新登入」的按鈕
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔄 重新嘗試登入", callback_data="start_login"))
+        bot.reply_to(message, "❌ <b>密碼錯誤或系統未設定密碼！</b>\n請確認後再試一次。", reply_markup=markup, parse_mode="HTML")
+
 # ================= 🛒 系統狀態記憶體 =================
 user_carts = {}
 user_checkout_data = {}
 
-# ================= 3. 底部主選單 =================
+# ================= 3. 選單與對話攔截 =================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     if not is_authorized(message.chat.id):
-        bot.reply_to(message, "🛑 <b>系統已鎖定！</b>\n您沒有權限操作此系統。請輸入您的專屬密碼解鎖。\n格式：<code>/login 密碼</code>", parse_mode="HTML")
+        # 🌟 如果沒登入，給他「登入按鈕」
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔐 點擊輸入密碼登入", callback_data="start_login"))
+        bot.reply_to(message, "🛑 <b>系統已鎖定！</b>\n您沒有權限操作此系統，請先登入：", reply_markup=markup, parse_mode="HTML")
         return
         
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
-    markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("❓ 系統說明"))
-    bot.reply_to(message, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
+    show_main_menu(message)
 
 @bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "❓ 系統說明"])
 def handle_menu_buttons(message):
     if not is_authorized(message.chat.id):
-        bot.reply_to(message, "🛑 <b>系統已鎖定！請先輸入密碼登入。</b>", parse_mode="HTML")
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔐 點擊輸入密碼登入", callback_data="start_login"))
+        bot.reply_to(message, "🛑 <b>操作遭拒絕，系統已鎖定！</b>\n請先進行登入：", reply_markup=markup, parse_mode="HTML")
         return
         
     text = message.text
@@ -152,13 +165,20 @@ def show_shop(message):
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     chat_id = call.message.chat.id
+    data = call.data
     
-    # 攔截未登入的按鈕點擊
-    if not is_authorized(chat_id):
-        bot.answer_callback_query(call.id, "🛑 系統已鎖定！請先輸入 /login 密碼 登入系統。", show_alert=True)
+    # 🌟 攔截未登入的點擊 (除了點擊「登入按鈕」本身)
+    if not is_authorized(chat_id) and data != "start_login":
+        bot.answer_callback_query(call.id, "🛑 系統已鎖定！請先完成登入程序。", show_alert=True)
         return
 
-    data = call.data
+    # 🌟 動作：引導輸入密碼
+    if data == "start_login":
+        msg = bot.send_message(chat_id, "✍️ <b>請直接打字輸入您的登入密碼：</b>", parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_password)
+        bot.answer_callback_query(call.id)
+        return
+
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
 
@@ -253,7 +273,7 @@ def process_customer_name(message):
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (含門禁系統) 啟動中...")
+    print("🤖 雲端版機器人 (按鈕登入版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
