@@ -8,7 +8,7 @@ import json
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================= 0. 保持雲端喚醒 (Render 專用防斷線機制) =================
+# ================= 0. 保持雲端喚醒 (Render 專用) =================
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -21,23 +21,19 @@ def run_dummy_server():
     server = HTTPServer(('0.0.0.0', port), DummyHandler)
     server.serve_forever()
 
-# 在背景啟動一個虛擬網頁伺服器，讓 Render 覺得我們活著
 Thread(target=run_dummy_server, daemon=True).start()
 
 # ================= 1. 系統設定 (支援雲端與本機) =================
-# 優先從雲端讀取 Token，如果沒有才用預設的
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 bot = telebot.TeleBot(TOKEN)
 
 try:
-    # 優先從雲端環境變數讀取 Google 金鑰
     gcp_env = os.environ.get("GCP_KEY_JSON")
     if gcp_env:
         gcp_dict = json.loads(gcp_env)
         gc = gspread.service_account_from_dict(gcp_dict)
         print("✅ 成功使用雲端金鑰連線！")
     else:
-        # 如果雲端沒有，就找本機的 xx.json
         gc = gspread.service_account(filename=r"C:\Users\Josh\Desktop\z\xx.json")
         print("✅ 成功使用本機金鑰連線！")
         
@@ -47,20 +43,49 @@ try:
 except Exception as e:
     print(f"❌ 資料庫連線失敗：{e}")
 
+# ================= 🔐 2. 門禁安全系統 (員工身分認證) =================
+# 用來記錄已經成功登入的員工 ID
+AUTHORIZED_USERS = set()
+# 系統預設密碼 (你可以把 8888 改成你想要的數字)
+ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD", "8888") 
+
+@bot.message_handler(commands=['login'])
+def handle_login(message):
+    chat_id = message.chat.id
+    text = message.text.strip().split()
+    
+    if len(text) == 2 and text[1] == ACCESS_PASSWORD:
+        AUTHORIZED_USERS.add(chat_id)
+        bot.reply_to(message, "✅ <b>登入成功！</b>\n您已獲得系統操作權限。\n請點擊 /start 喚醒主選單。", parse_mode="HTML")
+    else:
+        bot.reply_to(message, "❌ <b>密碼錯誤！</b>\n請輸入正確格式，例如：<code>/login 8888</code>", parse_mode="HTML")
+
+def is_authorized(chat_id):
+    """檢查該用戶是否已經登入"""
+    return chat_id in AUTHORIZED_USERS
+
 # ================= 🛒 系統狀態記憶體 =================
 user_carts = {}
 user_checkout_data = {}
 
-# ================= 2. 底部主選單 =================
+# ================= 3. 底部主選單 =================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
+    if not is_authorized(message.chat.id):
+        bot.reply_to(message, "🛑 <b>系統已鎖定！</b>\n您沒有權限操作此系統。請輸入您的專屬密碼解鎖。\n格式：<code>/login 密碼</code>", parse_mode="HTML")
+        return
+        
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
     markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("❓ 系統說明"))
-    bot.reply_to(message, "🤖 <b>VIIYASIY 系統小秘書已上線！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
+    bot.reply_to(message, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
 
 @bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "❓ 系統說明"])
 def handle_menu_buttons(message):
+    if not is_authorized(message.chat.id):
+        bot.reply_to(message, "🛑 <b>系統已鎖定！請先輸入密碼登入。</b>", parse_mode="HTML")
+        return
+        
     text = message.text
     if text == "🛍️ 開始購物":
         show_shop(message)
@@ -71,7 +96,7 @@ def handle_menu_buttons(message):
     elif text == "❓ 系統說明":
         send_welcome(message)
 
-# ================= 3. 核心功能區 =================
+# ================= 4. 核心功能區 =================
 def check_stock(message):
     try:
         df_sum = pd.DataFrame(ws_summary.get_all_records())
@@ -123,10 +148,16 @@ def show_shop(message):
     except Exception as e:
         bot.reply_to(message, "載入目錄失敗。")
 
-# ================= 4. 按鈕互動處理區 =================
+# ================= 5. 按鈕互動處理區 =================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     chat_id = call.message.chat.id
+    
+    # 攔截未登入的按鈕點擊
+    if not is_authorized(chat_id):
+        bot.answer_callback_query(call.id, "🛑 系統已鎖定！請先輸入 /login 密碼 登入系統。", show_alert=True)
+        return
+
     data = call.data
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
@@ -204,6 +235,9 @@ def handle_query(call):
 
 def process_customer_name(message):
     chat_id = message.chat.id
+    if not is_authorized(chat_id):
+        return
+        
     customer_name = message.text
     user_checkout_data[chat_id] = customer_name 
     markup = InlineKeyboardMarkup(row_width=2)
@@ -217,9 +251,9 @@ def process_customer_name(message):
     )
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
-# ================= 5. 啟動機器人 =================
+# ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人啟動中...")
+    print("🤖 雲端版機器人 (含門禁系統) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
