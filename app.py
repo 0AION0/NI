@@ -111,7 +111,7 @@ def load_all_data():
     if log_records:
         df_l = pd.DataFrame(log_records)
     else:
-        df_l = pd.DataFrame(columns=["交易時間", "訂單編號", "產品名稱", "售出數量", "銷售總額", "銷售通路", "客戶名稱/IG", "訂單類型"])
+        df_l = pd.DataFrame(columns=["交易時間", "訂單編號", "產品名稱", "售出數量", "銷售總額", "銷售通路", "客戶", "訂單類型"])
     return df_sum, df_l
 
 df_summary, df_log = load_all_data()
@@ -394,7 +394,7 @@ with tab4:
                 
                 orders_display.append({
                     "交易時間": time_str,
-                    "客戶名稱/IG": customer_name,
+                    "客戶": customer_name,
                     "購買內容": " + ".join(items_str_list),
                     "實收總額": f"${total_order_revenue:,}",
                     "通路": channel_name,
