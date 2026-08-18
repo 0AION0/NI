@@ -47,7 +47,7 @@ except Exception as e:
 # 用來記錄已經成功登入的員工 ID
 AUTHORIZED_USERS = set()
 # 系統預設密碼 (你可以把 8888 改成你想要的數字)
-ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD", "8888") 
+ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD")
 
 @bot.message_handler(commands=['login'])
 def handle_login(message):
