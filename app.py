@@ -368,7 +368,7 @@ with tab4:
             
             for order_id, group in grouped:
                 time_str = group['交易時間'].iloc[0]
-                customer_name = group['客戶名稱/IG'].iloc[0]
+                customer_name = group['客戶'].iloc[0]
                 channel_name = group['銷售通路'].iloc[0]
                 total_order_revenue = group['銷售總額'].sum()
                 
