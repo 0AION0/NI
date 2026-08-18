@@ -3,17 +3,47 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 import gspread
 import pandas as pd
 from datetime import datetime
+import os
+import json
+from threading import Thread
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================= 1. 系統設定 =================
-TOKEN = "8801889772:AAG-AbdtDJp5mnQEOCOX3uvRH0v6u97edMc"
+# ================= 0. 保持雲端喚醒 (Render 專用防斷線機制) =================
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    server.serve_forever()
+
+# 在背景啟動一個虛擬網頁伺服器，讓 Render 覺得我們活著
+Thread(target=run_dummy_server, daemon=True).start()
+
+# ================= 1. 系統設定 (支援雲端與本機) =================
+# 優先從雲端讀取 Token，如果沒有才用預設的
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 bot = telebot.TeleBot(TOKEN)
 
 try:
-    gc = gspread.service_account(filename=r"C:\Users\Josh\Desktop\z\xx.json")
+    # 優先從雲端環境變數讀取 Google 金鑰
+    gcp_env = os.environ.get("GCP_KEY_JSON")
+    if gcp_env:
+        gcp_dict = json.loads(gcp_env)
+        gc = gspread.service_account_from_dict(gcp_dict)
+        print("✅ 成功使用雲端金鑰連線！")
+    else:
+        # 如果雲端沒有，就找本機的 xx.json
+        gc = gspread.service_account(filename=r"C:\Users\Josh\Desktop\z\xx.json")
+        print("✅ 成功使用本機金鑰連線！")
+        
     sh = gc.open("Stock")
     ws_summary = sh.worksheet("庫存總表")
     ws_log = sh.worksheet("銷售紀錄")
-    print("✅ 資料庫連線成功！")
 except Exception as e:
     print(f"❌ 資料庫連線失敗：{e}")
 
@@ -80,7 +110,6 @@ def show_shop(message):
     try:
         df_sum = pd.DataFrame(ws_summary.get_all_records())
         markup = InlineKeyboardMarkup()
-        
         for _, row in df_sum.iterrows():
             prod_name = row['產品名稱']
             price = row['零售價']
@@ -88,10 +117,8 @@ def show_shop(message):
                 InlineKeyboardButton(f"➕ 加入 {prod_name} (${price:,})", callback_data=f"add_{prod_name}"),
                 InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}")
             )
-        
         markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
         markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
-        
         bot.send_message(chat_id, "🛍 <b>VIIYASIY 產品目錄</b>\n請點擊按鈕增減商品：", reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, "載入目錄失敗。")
@@ -101,7 +128,6 @@ def show_shop(message):
 def handle_query(call):
     chat_id = call.message.chat.id
     data = call.data
-    
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
 
@@ -140,7 +166,6 @@ def handle_query(call):
             msg += f"▪️ {p_name} x {qty}\n"
             
         msg += f"\n💰 <b>應收總計：${total:,}</b>"
-        
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(
             InlineKeyboardButton("💳 確認無誤，開始結帳", callback_data="start_checkout"),
@@ -150,7 +175,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
 
     elif data == "start_checkout":
-        # 🌟 已經將 parse_mode 改為 HTML，再也不怕底線報錯了
         msg = bot.send_message(chat_id, "✍️ <b>結帳第一步：</b>\n請直接打字輸入客人的「名稱或 IG 帳號」(例如：@amy_123)：", parse_mode="HTML")
         bot.register_next_step_handler(msg, process_customer_name)
         bot.answer_callback_query(call.id)
@@ -159,16 +183,13 @@ def handle_query(call):
         channel = data.replace("channel_", "")
         customer = user_checkout_data.get(chat_id, "未知客戶")
         cart = user_carts.get(chat_id, {})
-        
         if not cart:
             bot.send_message(chat_id, "⚠️ 購物車已失效，請重新下單。")
             return
-            
         try:
             df_sum = pd.DataFrame(ws_summary.get_all_records())
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
-            
             order_total_price = 0
             for prod_name, qty in cart.items():
                 unit_price = int(df_sum.loc[df_sum['產品名稱'] == prod_name, '零售價'].values[0])
@@ -177,18 +198,14 @@ def handle_query(call):
                 ws_log.append_rows([[now_str, order_id, prod_name, qty, total_price, channel, customer, "TG智慧單品"]])
                 
             user_carts[chat_id] = {} 
-            
-            # 🌟 這裡也改成 HTML 防護
             bot.send_message(chat_id, f"🎉 <b>訂單建立成功！</b>\n單號：<code>{order_id}</code>\n客戶：{customer}\n通路：{channel}\n總計：<b>${order_total_price:,}</b>\n✅ 庫存已即時扣除！", parse_mode="HTML")
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ 結帳發生錯誤：{e}")
 
-# 接聽客人的名字
 def process_customer_name(message):
     chat_id = message.chat.id
     customer_name = message.text
     user_checkout_data[chat_id] = customer_name 
-    
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📱 IG私訊", callback_data="channel_IG私訊"),
@@ -198,13 +215,11 @@ def process_customer_name(message):
         InlineKeyboardButton("🦐 蝦皮", callback_data="channel_蝦皮"),
         InlineKeyboardButton("🤝 親友/面交", callback_data="channel_親友/面交")
     )
-    
-    # 🌟 這裡改成 HTML 防護，客人名字有底線也不會出事
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 # ================= 5. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 智慧版機器人 (修復底線崩潰 Bug) 已啟動！ (按 Ctrl + C 停止)")
+    print("🤖 雲端版機器人啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
