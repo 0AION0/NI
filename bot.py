@@ -187,7 +187,6 @@ def get_shop_content(chat_id):
     records = get_cached_catalog()
     markup = InlineKeyboardMarkup()
     
-    # 上方保留簡單的純文字對照表，方便客人直接看到價格
     menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n"
     
     for row in records:
@@ -235,12 +234,10 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
         
-    # 防止點到中間的「品名數字」出錯
     if data == "ignore":
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 動態購物車：按 ➕ 的反應
     if data.startswith("add_"):
         prod_name = data.replace("add_", "")
         if chat_id not in user_carts:
@@ -253,7 +250,6 @@ def handle_query(call):
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         return
 
-    # 🌟 動態購物車：按 ➖ 的反應
     elif data.startswith("sub_"):
         prod_name = data.replace("sub_", "")
         if chat_id in user_carts and user_carts[chat_id].get(prod_name, 0) > 0:
@@ -268,7 +264,7 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ 數量已經是 0 囉！", show_alert=True)
         return
 
-    # 抽獎邏輯
+    # 抽獎邏輯 (修復字串錯誤版)
     if data.startswith("lottery_"):
         bot.answer_callback_query(call.id)
         try:
@@ -325,61 +321,99 @@ def handle_query(call):
             
             winner = random.choice(customers)
             
+            # 👇 這裡的錯誤字串已完全修復完畢
             bot.send_message(
                 chat_id, 
-                f"🎊 <b>【{mode_name}】結果出爐！假設您指的是處理 `客戶名稱/IG` 資料的**自動報到與抽獎系統**，以下為使用 Streamlit 與 Pandas 開發的完整 Python 程式碼架構。
+                f"🎊 <b>【{mode_name}】結果出爐！</b> 🎊\n\n"
+                f"恭喜本次的幸運得主是：\n"
+                f"🏆 <code>{winner}</code>\n\n"
+                f"趕快去私訊他領獎吧！", 
+                reply_to_message_id=dice_msg.message_id,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            bot.send_message(chat_id, f"抽獎發生錯誤：{e}")
+        return
 
-### 報到與抽獎系統完整程式
+    if data == "clear_cart":
+        user_carts[chat_id] = {}
+        bot.answer_callback_query(call.id, "🗑️ 購物車已全部清空！", show_alert=True)
+        _, markup = get_shop_content(chat_id)
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
 
-這個架構包含了基本的資料初始化、前端報到介面設計，以及篩選已報到名單進行隨機抽獎的邏輯：
+    elif data == "view_cart":
+        cart = user_carts.get(chat_id, {})
+        if not cart:
+            bot.answer_callback_query(call.id, "⚠️ 購物車目前是空的喔！", show_alert=True)
+            return
+            
+        msg = "🛒 <b>您的購物車清單：</b>\n\n"
+        total = 0
+        df_sum = pd.DataFrame(get_cached_catalog())
+        for p_name, qty in cart.items():
+            unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_name, '零售價'].values[0])
+            total += unit_price * qty
+            msg += f"▪️ {p_name} x {qty}\n"
+            
+        msg += f"\n💰 <b>應收總計：${total:,}</b>"
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("💳 確認無誤，開始結帳", callback_data="start_checkout"),
+            InlineKeyboardButton("🗑️ 放棄結帳並清空", callback_data="clear_cart")
+        )
+        bot.send_message(chat_id, msg, reply_markup=markup, parse_mode="HTML")
+        bot.answer_callback_query(call.id)
 
-```python
-import streamlit as st
-import pandas as pd
-import random
+    elif data == "start_checkout":
+        msg = bot.send_message(chat_id, "✍️ <b>結帳第一步：</b>\n請直接打字輸入客人的「名稱或 IG 帳號」(例如：@amy_123)：", parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_customer_name)
+        bot.answer_callback_query(call.id)
+        
+    elif data.startswith("channel_"):
+        channel = data.replace("channel_", "")
+        customer = user_checkout_data.get(chat_id, "未知客戶")
+        cart = user_carts.get(chat_id, {})
+        if not cart:
+            bot.send_message(chat_id, "⚠️ 購物車已失效，請重新下單。")
+            return
+        try:
+            df_sum = pd.DataFrame(get_cached_catalog())
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+            order_total_price = 0
+            for prod_name, qty in cart.items():
+                unit_price = int(df_sum.loc[df_sum['產品名稱'] == prod_name, '零售價'].values[0])
+                total_price = unit_price * qty
+                order_total_price += total_price
+                ws_log.append_rows([[now_str, order_id, prod_name, qty, total_price, channel, customer, "TG智慧單品"]])
+                
+            user_carts[chat_id] = {} 
+            bot.send_message(chat_id, f"🎉 <b>訂單建立成功！</b>\n單號：<code>{order_id}</code>\n客戶：{customer}\n通路：{channel}\n總計：<b>${order_total_price:,}</b>\n✅ 庫存已即時扣除！", parse_mode="HTML")
+        except Exception as e:
+            bot.send_message(chat_id, f"⚠️ 結帳發生錯誤：{e}")
 
-# 1. 初始化資料狀態
-# 使用 session_state 確保網頁互動時資料不會被重置
-if 'df' not in st.session_state:
-    # 建立包含 客戶名稱/IG 的初始 DataFrame，預設皆未報到
-    data = {
-        '客戶名稱/IG': ['UserA_IG', 'UserB_IG', 'UserC_IG', 'UserD_IG'],
-        '已報到': [False, False, False, False]
-    }
-    st.session_state.df = pd.DataFrame(data)
+def process_customer_name(message):
+    chat_id = message.chat.id
+    if not is_authorized(chat_id):
+        return
+        
+    customer_name = message.text
+    user_checkout_data[chat_id] = customer_name 
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📱 IG私訊", callback_data="channel_IG私訊"),
+        InlineKeyboardButton("📦 賣貨便", callback_data="channel_賣貨便")
+    )
+    markup.add(
+        InlineKeyboardButton("🦐 蝦皮", callback_data="channel_蝦皮"),
+        InlineKeyboardButton("🤝 親友/面交", callback_data="channel_親友/面交")
+    )
+    bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
-st.title("🎉 活動報到與抽獎系統")
-st.divider()
-
-# 2. 報到區塊
-st.header("📋 報到區")
-customer_name = st.text_input("請輸入「客戶名稱/IG」進行報到：")
-
-if st.button("確認報到"):
-    # 檢查輸入的名稱是否存在於名單中
-    if customer_name in st.session_state.df['客戶名稱/IG'].values:
-        # 將該客戶的報到狀態更新為 True
-        st.session_state.df.loc[st.session_state.df['客戶名稱/IG'] == customer_name, '已報到'] = True
-        st.success(f"✅ 客戶 **{customer_name}** 報到成功！")
-    elif customer_name != "":
-        st.error("❌ 找不到此客戶，請確認輸入的名稱是否正確。")
-
-# 顯示目前的即時名單狀態
-st.write("目前的報到名單狀態：")
-st.dataframe(st.session_state.df, use_container_width=True)
-
-st.divider()
-
-# 3. 抽獎區塊
-st.header("🎁 抽獎區")
-if st.button("開始抽獎"):
-    # 從 DataFrame 中篩選出「已報到」欄位為 True 的客戶名單
-    checked_in_users = st.session_state.df[st.session_state.df['已報到'] == True]['客戶名稱/IG'].tolist()
-    
-    if len(checked_in_users) > 0:
-        # 進行隨機抽獎
-        winner = random.choice(checked_in_users)
-        st.balloons()
-        st.success(f"🎊 恭喜中獎者：**{winner}** 🎊")
-    else:
-        st.warning("⚠️ 目前還沒有任何人完成報到，無法進行抽獎喔！")
+# ================= 6. 啟動機器人 =================
+if __name__ == "__main__":
+    print("🤖 雲端版機器人 (完美修復版) 啟動中...")
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        print("\n機器人已停止運作。")
