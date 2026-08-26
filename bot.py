@@ -80,13 +80,6 @@ user_checkout_data = {}
 global_catalog = []
 last_fetch_time = 0
 
-# 🚚 運費設定區 (賣貨便已更新為 38)
-SHIPPING_PRICES = {
-    "ship_38": {"name": "📦 運費 (賣貨便)", "price": 38},
-    "ship_60": {"name": "📦 運費 (店到店)", "price": 60},
-    "ship_100": {"name": "📦 運費 (宅配)", "price": 100}
-}
-
 def get_cached_catalog():
     global global_catalog, last_fetch_time
     if not global_catalog or time.time() - last_fetch_time > 60:
@@ -186,7 +179,7 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 生成「動態購物車」介面
+# 🌟 生成「純商品動態購物車」介面
 def get_shop_content(chat_id):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
@@ -196,7 +189,6 @@ def get_shop_content(chat_id):
     
     menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n👇 <b>請點擊下方按鈕選購：</b>"
     
-    # 1. 載入實體商品
     for row in records:
         prod_name = row['產品名稱']
         price = row['零售價']
@@ -207,19 +199,6 @@ def get_shop_content(chat_id):
             InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}"),
             InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
             InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
-        )
-        
-    # 2. 🌟 載入專屬運費按鈕
-    markup.row(InlineKeyboardButton("─── 🚚 附加運費選項 ───", callback_data="ignore"))
-    for ship_key, ship_info in SHIPPING_PRICES.items():
-        ship_name = ship_info["name"]
-        ship_price = ship_info["price"]
-        qty = user_carts[chat_id].get(ship_key, 0)
-        
-        markup.row(
-            InlineKeyboardButton("➖", callback_data=f"sub_{ship_key}"),
-            InlineKeyboardButton(f"{ship_name} : {qty}", callback_data="ignore"),
-            InlineKeyboardButton("➕", callback_data=f"add_{ship_key}")
         )
         
     markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
@@ -255,7 +234,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 動態購物車：按 ➕ 的反應
     if data.startswith("add_"):
         prod_name = data.replace("add_", "")
         if chat_id not in user_carts:
@@ -268,7 +246,6 @@ def handle_query(call):
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         return
 
-    # 🌟 動態購物車：按 ➖ 的反應
     elif data.startswith("sub_"):
         prod_name = data.replace("sub_", "")
         if chat_id in user_carts and user_carts[chat_id].get(prod_name, 0) > 0:
@@ -369,19 +346,13 @@ def handle_query(call):
         total = 0
         df_sum = pd.DataFrame(get_cached_catalog())
         
-        # 🌟 結算時判斷是實體商品還是運費
-        for p_key, qty in cart.items():
-            if p_key in SHIPPING_PRICES:
-                p_name = SHIPPING_PRICES[p_key]["name"]
-                unit_price = SHIPPING_PRICES[p_key]["price"]
-            else:
-                p_name = p_key
-                unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_key, '零售價'].values[0])
-                
+        for p_name, qty in cart.items():
+            unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_name, '零售價'].values[0])
             total += unit_price * qty
             msg += f"▪️ {p_name} x {qty}\n"
             
-        msg += f"\n💰 <b>應收總計：${total:,}</b>"
+        msg += f"\n💰 <b>商品總計：${total:,}</b>\n(運費將於下一步驟結算)"
+        
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(
             InlineKeyboardButton("💳 確認無誤，開始結帳", callback_data="start_checkout"),
@@ -402,30 +373,55 @@ def handle_query(call):
         if not cart:
             bot.send_message(chat_id, "⚠️ 購物車已失效，請重新下單。")
             return
+            
         try:
             df_sum = pd.DataFrame(get_cached_catalog())
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
-            order_total_price = 0
             
-            # 🌟 寫入試算表時判斷是實體商品還是運費
-            for p_key, qty in cart.items():
-                if p_key in SHIPPING_PRICES:
-                    prod_name = SHIPPING_PRICES[p_key]["name"]
-                    unit_price = SHIPPING_PRICES[p_key]["price"]
-                else:
-                    prod_name = p_key
-                    unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_key, '零售價'].values[0])
-                    
+            item_total_price = 0
+            # 1. 寫入所有實體商品紀錄
+            for prod_name, qty in cart.items():
+                unit_price = int(df_sum.loc[df_sum['產品名稱'] == prod_name, '零售價'].values[0])
                 total_price = unit_price * qty
-                order_total_price += total_price
+                item_total_price += total_price
                 ws_log.append_rows([[now_str, order_id, prod_name, qty, total_price, channel, customer, "TG智慧單品"]])
                 
+            # 2. 🌟 自動判斷並加上運費
+            shipping_fee = 0
+            if channel == "賣貨便":
+                shipping_fee = 38
+            elif channel == "店到店":
+                shipping_fee = 60
+            elif channel == "宅配":
+                shipping_fee = 100
+                
+            # 如果有產生運費，自動寫入一筆運費紀錄到試算表
+            if shipping_fee > 0:
+                ws_log.append_rows([[now_str, order_id, f"附加運費 ({channel})", 1, shipping_fee, channel, customer, "系統運費"]])
+                
+            order_total_price = item_total_price + shipping_fee
             user_carts[chat_id] = {} 
-            bot.send_message(chat_id, f"🎉 <b>訂單建立成功！</b>\n單號：<code>{order_id}</code>\n客戶：{customer}\n通路：{channel}\n總計：<b>${order_total_price:,}</b>\n✅ 紀錄已同步至資料庫！", parse_mode="HTML")
+            
+            # 3. 顯示結帳明細
+            receipt_msg = (
+                f"🎉 <b>訂單建立成功！</b>\n"
+                f"單號：<code>{order_id}</code>\n"
+                f"客戶：{customer}\n"
+                f"通路：{channel}\n\n"
+                f"📦 商品總計：${item_total_price:,}\n"
+            )
+            
+            if shipping_fee > 0:
+                receipt_msg += f"🚚 附加運費：${shipping_fee:,}\n"
+                
+            receipt_msg += f"\n💰 <b>總結帳金額：${order_total_price:,}</b>\n\n✅ 紀錄已同步至資料庫！"
+            
+            bot.send_message(chat_id, receipt_msg, parse_mode="HTML")
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ 結帳發生錯誤：{e}")
 
+# 🌟 結帳第二步：選擇通路時，直接標示運費金額
 def process_customer_name(message):
     chat_id = message.chat.id
     if not is_authorized(chat_id):
@@ -434,19 +430,25 @@ def process_customer_name(message):
     customer_name = message.text
     user_checkout_data[chat_id] = customer_name 
     markup = InlineKeyboardMarkup(row_width=2)
+    
     markup.add(
-        InlineKeyboardButton("📱 IG私訊", callback_data="channel_IG私訊"),
-        InlineKeyboardButton("📦 賣貨便", callback_data="channel_賣貨便")
+        InlineKeyboardButton("📦 賣貨便 (+$38)", callback_data="channel_賣貨便"),
+        InlineKeyboardButton("🏪 店到店 (+$60)", callback_data="channel_店到店")
     )
     markup.add(
-        InlineKeyboardButton("🦐 蝦皮", callback_data="channel_蝦皮"),
-        InlineKeyboardButton("🤝 親友/面交", callback_data="channel_親友/面交")
+        InlineKeyboardButton("🚚 宅配 (+$100)", callback_data="channel_宅配"),
+        InlineKeyboardButton("🦐 蝦皮 (未含運)", callback_data="channel_蝦皮")
     )
-    bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
+    markup.add(
+        InlineKeyboardButton("📱 IG私訊 (免運)", callback_data="channel_IG私訊"),
+        InlineKeyboardButton("🤝 親友/面交 (免運)", callback_data="channel_親友/面交")
+    )
+    
+    bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路，系統將自動為您計算運費：", reply_markup=markup, parse_mode="HTML")
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (含運費按鈕版) 啟動中...")
+    print("🤖 雲端版機器人 (自動運費升級版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
