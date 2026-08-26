@@ -57,7 +57,8 @@ def show_main_menu(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
     markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("🎉 幸運抽獎"))
-    markup.add(KeyboardButton("❓ 系統說明"))
+    # 🌟 在選單新增「查詢訂單」按鈕
+    markup.add(KeyboardButton("🔍 查詢訂單"), KeyboardButton("❓ 系統說明"))
     bot.send_message(message.chat.id, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
 
 def process_password(message):
@@ -76,7 +77,7 @@ def process_password(message):
 # ================= 🛒 系統狀態記憶體與快取 =================
 user_carts = {}
 user_checkout_data = {}
-user_shop_step = {} # 紀錄用戶在第一步還是第二步
+user_shop_step = {} 
 
 global_catalog = []
 last_fetch_time = 0
@@ -111,7 +112,8 @@ def send_welcome(message):
         return
     show_main_menu(message)
 
-@bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "🎉 幸運抽獎", "❓ 系統說明"])
+# 🌟 攔截清單加入「🔍 查詢訂單」
+@bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "🎉 幸運抽獎", "🔍 查詢訂單", "❓ 系統說明"])
 def handle_menu_buttons(message):
     if not is_authorized(message.chat.id):
         markup = InlineKeyboardMarkup()
@@ -128,10 +130,77 @@ def handle_menu_buttons(message):
         check_report(message)
     elif text == "🎉 幸運抽獎":
         draw_lottery(message)
+    elif text == "🔍 查詢訂單":
+        # 🌟 觸發查詢流程
+        msg = bot.send_message(message.chat.id, "🔍 <b>請直接打字輸入要查詢的「客戶名稱」或「IG 帳號」：</b>\n(支援模糊搜尋，例如輸入 amy 即可找到 @amy_123)", parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_order_search)
     elif text == "❓ 系統說明":
         send_welcome(message)
 
 # ================= 4. 核心功能區 =================
+# 🌟 新增：查詢訂單的核心處理函數
+def process_order_search(message):
+    chat_id = message.chat.id
+    if not is_authorized(chat_id): return
+    
+    search_name = message.text.strip()
+    bot.send_message(chat_id, f"🔄 正在資料庫中搜尋包含「<b>{search_name}</b>」的訂單...", parse_mode="HTML")
+    
+    try:
+        df_log = pd.DataFrame(ws_log.get_all_records())
+        if df_log.empty:
+            bot.send_message(chat_id, "⚠️ 目前沒有任何銷售紀錄。")
+            return
+            
+        customer_col = '客戶'
+        if customer_col not in df_log.columns:
+            bot.send_message(chat_id, "⚠️ 試算表中找不到『客戶』欄位。")
+            return
+            
+        # 模糊搜尋：不管大小寫，只要名字裡包含輸入的字就會抓出來
+        matched_df = df_log[df_log[customer_col].astype(str).str.contains(search_name, case=False, na=False)]
+        
+        if matched_df.empty:
+            bot.send_message(chat_id, f"❌ 找不到與「<b>{search_name}</b>」相關的歷史訂單紀錄。", parse_mode="HTML")
+            return
+            
+        # 確保金額格式正確以便加總
+        matched_df['銷售總額'] = pd.to_numeric(matched_df['銷售總額'], errors='coerce').fillna(0)
+        
+        reply_text = f"📋 <b>為您找到以下關於「{search_name}」的訂單：</b>\n\n"
+        
+        # 按照「訂單編號」將商品群組化，避免同一單出現好幾次
+        grouped = matched_df.groupby('訂單編號')
+        
+        for order_id, group in grouped:
+            date = group['交易時間'].iloc[0]
+            channel = group['銷售通路'].iloc[0]
+            actual_customer = group[customer_col].iloc[0]
+            order_total = group['銷售總額'].sum()
+            
+            reply_text += f"📅 <code>{date}</code>\n"
+            reply_text += f"🔖 <b>單號：</b><code>{order_id}</code>\n"
+            reply_text += f"👤 <b>客戶：</b>{actual_customer} ({channel})\n"
+            reply_text += f"🛍️ <b>購買內容：</b>\n"
+            
+            for _, row in group.iterrows():
+                prod = row['產品名稱']
+                qty = row['售出數量']
+                reply_text += f"   ▪️ {prod} x {qty}\n"
+                
+            reply_text += f"💰 <b>總金額：${order_total:,.0f}</b>\n"
+            reply_text += "➖➖➖➖➖➖➖➖\n"
+            
+        # 避免文字過長超過 Telegram 限制
+        if len(reply_text) > 4000:
+            reply_text = reply_text[:4000] + "...\n(資料過多，僅顯示近期紀錄)"
+            
+        bot.send_message(chat_id, reply_text, parse_mode="HTML")
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"查詢發生錯誤：{e}")
+
+# 以下為原本的其他功能區塊
 def check_stock(message):
     try:
         df_sum = pd.DataFrame(ws_summary.get_all_records())
@@ -193,17 +262,15 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 兩步驟流暢生成器 (完美避開100按鈕限制)
+# 🌟 兩步驟流暢生成器
 def get_shop_content(chat_id, step="main"):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
         
     markup = InlineKeyboardMarkup()
     
-    # 🛒 第一步：常規商品
     if step == "main":
         menu_text = "🛍 <b>VIIYASIY 產品目錄 (1/2)</b>\n\n👇 <b>請選購常規商品：</b>"
-        # 為了避免超出Telegram限制，強制最多只載入前 24 樣實體商品
         records = get_cached_catalog()[:24] 
         
         for row in records:
@@ -218,15 +285,12 @@ def get_shop_content(chat_id, step="main"):
                 InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
             )
             
-        # 最下方的切換按鈕
         markup.row(InlineKeyboardButton("➡️ 下一步 (選擇贈品與運費) ➡️", callback_data="shop_addon"))
         markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
 
-    # 🎁 第二步：贈品與運費
     elif step == "addon":
         menu_text = "🛍 <b>VIIYASIY 附加項目 (2/2)</b>\n\n👇 <b>請選擇贈品與運費：</b>"
         
-        # 載入贈品
         markup.row(InlineKeyboardButton("─── 🎁 贈品選項 (扣庫存/0元) ───", callback_data="ignore"))
         for gift_name in GIFT_ITEMS:
             gift_key = f"gift_{gift_name}"
@@ -239,7 +303,6 @@ def get_shop_content(chat_id, step="main"):
                 InlineKeyboardButton("➕", callback_data=f"add_{gift_key}")
             )
             
-        # 載入運費
         markup.row(InlineKeyboardButton("─── 🚚 附加運費選項 ───", callback_data="ignore"))
         for ship_key, ship_info in SHIPPING_PRICES.items():
             ship_name = ship_info["name"]
@@ -253,7 +316,6 @@ def get_shop_content(chat_id, step="main"):
                 InlineKeyboardButton("➕", callback_data=f"add_{ship_key}")
             )
             
-        # 最下方的切換按鈕
         markup.row(InlineKeyboardButton("🔙 回上一步 (常規商品)", callback_data="shop_main"))
         markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
         
@@ -262,7 +324,7 @@ def get_shop_content(chat_id, step="main"):
 def show_shop(message):
     chat_id = message.chat.id
     try:
-        user_shop_step[chat_id] = "main" # 預設開啟第一步
+        user_shop_step[chat_id] = "main"
         menu_text, markup = get_shop_content(chat_id, "main")
         bot.send_message(chat_id, menu_text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
@@ -288,7 +350,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 處理「下一步」與「上一步」的切換
     if data == "shop_addon":
         user_shop_step[chat_id] = "addon"
         menu_text, markup = get_shop_content(chat_id, "addon")
@@ -303,7 +364,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 動態購物車：加減數量
     if data.startswith("add_"):
         prod_name = data.replace("add_", "")
         if chat_id not in user_carts: user_carts[chat_id] = {}
@@ -329,7 +389,6 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ 數量已經是 0 囉！", show_alert=True)
         return
 
-    # 抽獎邏輯
     if data.startswith("lottery_"):
         bot.answer_callback_query(call.id)
         try:
@@ -478,7 +537,7 @@ def process_customer_name(message):
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (兩步驟無分頁版) 啟動中...")
+    print("🤖 雲端版機器人 (含查詢訂單版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
