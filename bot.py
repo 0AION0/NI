@@ -7,6 +7,7 @@ import os
 import json
 import random
 import time
+from collections import Counter
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -47,15 +48,12 @@ except Exception as e:
 
 # ================= 🔐 2. 門禁安全系統 =================
 AUTHORIZED_USERS = set()
-# 🌟 絕對只認 Render 上的環境變數
 ACCESS_PASSWORD = os.environ.get("BOT_PASSWORD") 
 
 def is_authorized(chat_id):
-    """檢查該用戶是否已經登入"""
     return chat_id in AUTHORIZED_USERS
 
 def show_main_menu(message):
-    """顯示底部主選單 (解鎖後才呼叫)"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
     markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("🎉 幸運抽獎"))
@@ -63,7 +61,6 @@ def show_main_menu(message):
     bot.send_message(message.chat.id, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
 
 def process_password(message):
-    """接聽密碼的處理中心"""
     chat_id = message.chat.id
     entered_password = message.text.strip()
     
@@ -88,7 +85,6 @@ def send_welcome(message):
         markup.add(InlineKeyboardButton("🔐 點擊輸入密碼登入", callback_data="start_login"))
         bot.reply_to(message, "🛑 <b>系統已鎖定！</b>\n您沒有權限操作此系統，請先登入：", reply_markup=markup, parse_mode="HTML")
         return
-        
     show_main_menu(message)
 
 @bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "🎉 幸運抽獎", "❓ 系統說明"])
@@ -152,7 +148,6 @@ def check_report(message):
 
         medals = ["🥇", "🥈", "🥉"]
         rank_idx = 0
-        
         for _, row in sales_ranking.iterrows():
             prod_name = row['產品名稱']
             qty = int(row['售出數量'])
@@ -166,44 +161,13 @@ def check_report(message):
         bot.reply_to(message, f"查詢報表失敗：{e}")
 
 def draw_lottery(message):
-    try:
-        df_log = pd.DataFrame(ws_log.get_all_records())
-        if df_log.empty:
-            bot.reply_to(message, "目前還沒有任何銷售紀錄，無法進行抽獎喔！")
-            return
-            
-        # 假設你的試算表欄位名稱叫做 '客戶' 或包含客戶資訊的欄位
-        customer_column = '客戶' 
-        if customer_column in df_log.columns:
-            customers = df_log[customer_column].dropna().unique().tolist()
-        else:
-            bot.reply_to(message, "⚠️ 試算表中找不到『客戶』欄位，請確認銷售紀錄表的標題。")
-            return
-
-        customers = [str(c).strip() for c in customers if str(c).strip() != ""]
-
-        if not customers:
-            bot.reply_to(message, "沒有找到有效的客戶名單可以抽獎！")
-            return
-
-        bot.send_message(message.chat.id, "🎰 <b>系統正在從資料庫撈取名單抽獎...</b>", parse_mode="HTML")
-        dice_msg = bot.send_dice(message.chat.id, emoji='🎰')
-        
-        time.sleep(3.5)
-        
-        winner = random.choice(customers)
-        
-        bot.send_message(
-            message.chat.id, 
-            f"🎊 <b>抽獎結果出爐！</b> 🎊\n\n"
-            f"恭喜本次的幸運得主是：\n"
-            f"🏆 <code>{winner}</code>\n\n"
-            f"趕快去私訊他領獎吧！", 
-            reply_to_message_id=dice_msg.message_id,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        bot.reply_to(message, f"抽獎發生錯誤：{e}")
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("👤 公平抽獎 (每人一票)", callback_data="lottery_fair"),
+        InlineKeyboardButton("🎟️ 狂熱抽獎 (按消費次數提升機率)", callback_data="lottery_weighted"),
+        InlineKeyboardButton("💰 VIP 抽獎 (總消費滿 $1000)", callback_data="lottery_vip")
+    )
+    bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
 def show_shop(message):
     chat_id = message.chat.id
@@ -213,18 +177,35 @@ def show_shop(message):
     try:
         df_sum = pd.DataFrame(ws_summary.get_all_records())
         markup = InlineKeyboardMarkup()
-        for _, row in df_sum.iterrows():
+        
+        # 準備文字菜單
+        menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n"
+        emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        
+        for idx, row in df_sum.iterrows():
             prod_name = row['產品名稱']
             price = row['零售價']
+            
+            # 給每個商品一個專屬代號
+            icon = emojis[idx] if idx < len(emojis) else f"({idx+1})"
+            
+            # 把商品名稱和價格印在「對話文字」裡
+            menu_text += f"{icon} {prod_name} <code>(${price:,})</code>\n"
+            
+            # 下方的按鈕只顯示簡短的「加號/減號 + 代號」
             markup.row(
-                InlineKeyboardButton(f"➕ 加入 {prod_name} (${price:,})", callback_data=f"add_{prod_name}"),
-                InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}")
+                InlineKeyboardButton(f"➕ 新增 {icon}", callback_data=f"add_{prod_name}"),
+                InlineKeyboardButton(f"➖ 減少 {icon}", callback_data=f"sub_{prod_name}")
             )
+            
+        menu_text += "\n👇 <b>請點擊下方對應的代號按鈕來增減商品：</b>"
+            
         markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
         markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
-        bot.send_message(chat_id, "🛍 <b>VIIYASIY 產品目錄</b>\n請點擊按鈕增減商品：", reply_markup=markup, parse_mode="HTML")
+        
+        bot.send_message(chat_id, menu_text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
-        bot.reply_to(message, "載入目錄失敗。")
+        bot.reply_to(message, f"載入目錄失敗：{e}")
 
 # ================= 5. 按鈕互動處理區 =================
 @bot.callback_query_handler(func=lambda call: True)
@@ -242,6 +223,81 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
+    # 🌟 處理抽獎規則的核心邏輯
+    if data.startswith("lottery_"):
+        bot.answer_callback_query(call.id)
+        try:
+            df_log = pd.DataFrame(ws_log.get_all_records())
+            if df_log.empty:
+                bot.send_message(chat_id, "目前還沒有任何銷售紀錄，無法進行抽獎喔！")
+                return
+                
+            customer_column = '客戶' # 💡 若你的試算表標題不是客戶，請改這裡
+            if customer_column not in df_log.columns:
+                bot.send_message(chat_id, "⚠️ 試算表中找不到『客戶』欄位，請確認銷售紀錄表的標題。")
+                return
+
+            # 過濾掉空白名稱
+            df_log = df_log[df_log[customer_column].astype(str).str.strip() != ""]
+            
+            customers = []
+            mode_name = ""
+
+            # 根據按鈕選擇不同的運算規則
+            if data == "lottery_fair":
+                mode_name = "👤 公平抽獎"
+                customers = df_log[customer_column].unique().tolist()
+            elif data == "lottery_weighted":
+                mode_name = "🎟️ 狂熱抽獎"
+                customers = df_log[customer_column].tolist()
+            elif data == "lottery_vip":
+                mode_name = "💰 VIP 滿額抽獎"
+                df_log['銷售總額'] = pd.to_numeric(df_log['銷售總額'], errors='coerce').fillna(0)
+                vip_df = df_log.groupby(customer_column)['銷售總額'].sum().reset_index()
+                customers = vip_df[vip_df['銷售總額'] >= 1000][customer_column].tolist()
+
+            if not customers:
+                bot.send_message(chat_id, f"⚠️ 在【{mode_name}】規則下，沒有找到符合資格的客戶！")
+                return
+
+            # 列出參賽名單
+            if data == "lottery_weighted":
+                ticket_counts = Counter(customers)
+                list_text = "、".join([f"{name}({count}票)" for name, count in ticket_counts.items()])
+                participant_info = f"共 {len(ticket_counts)} 人參與，總計 {len(customers)} 張籤"
+            else:
+                list_text = "、".join(customers)
+                participant_info = f"共 {len(customers)} 人參與"
+
+            bot.send_message(
+                chat_id, 
+                f"📋 <b>【{mode_name}】符合資格名單：</b>\n"
+                f"({participant_info})\n\n"
+                f"<code>{list_text}</code>", 
+                parse_mode="HTML"
+            )
+
+            time.sleep(1.5)
+            bot.send_message(chat_id, f"🎰 <b>系統正在為您抽出幸運兒...</b>", parse_mode="HTML")
+            dice_msg = bot.send_dice(chat_id, emoji='🎰')
+            time.sleep(3.5)
+            
+            winner = random.choice(customers)
+            
+            bot.send_message(
+                chat_id, 
+                f"🎊 <b>【{mode_name}】結果出爐！</b> 🎊\n\n"
+                f"恭喜本次的幸運得主是：\n"
+                f"🏆 <code>{winner}</code>\n\n"
+                f"趕快去私訊他領獎吧！", 
+                reply_to_message_id=dice_msg.message_id,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            bot.send_message(chat_id, f"抽獎發生錯誤：{e}")
+        return
+
+    # 🛒 購物車邏輯
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
 
@@ -336,7 +392,7 @@ def process_customer_name(message):
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (完美終極版) 啟動中...")
+    print("🤖 雲端版機器人 (終極代號菜單版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
