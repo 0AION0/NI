@@ -80,6 +80,13 @@ user_checkout_data = {}
 global_catalog = []
 last_fetch_time = 0
 
+# 🚚 運費設定區 (賣貨便已更新為 38)
+SHIPPING_PRICES = {
+    "ship_38": {"name": "📦 運費 (賣貨便)", "price": 38},
+    "ship_60": {"name": "📦 運費 (店到店)", "price": 60},
+    "ship_100": {"name": "📦 運費 (宅配)", "price": 100}
+}
+
 def get_cached_catalog():
     global global_catalog, last_fetch_time
     if not global_catalog or time.time() - last_fetch_time > 60:
@@ -179,7 +186,7 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 生成「動態購物車」介面 (完美雙層排列版，解決字體截斷問題)
+# 🌟 生成「動態購物車」介面
 def get_shop_content(chat_id):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
@@ -189,21 +196,30 @@ def get_shop_content(chat_id):
     
     menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n👇 <b>請點擊下方按鈕選購：</b>"
     
+    # 1. 載入實體商品
     for row in records:
         prod_name = row['產品名稱']
         price = row['零售價']
         qty = user_carts[chat_id].get(prod_name, 0)
         
-        # 第一層：滿版寬度的商品名稱與價格 (絕對不會被切斷)
-        markup.row(
-            InlineKeyboardButton(f"🔹 {prod_name} (${price:,})", callback_data="ignore")
-        )
-        
-        # 第二層：下方的動態數字加減按鈕
+        markup.row(InlineKeyboardButton(f"🔹 {prod_name} (${price:,})", callback_data="ignore"))
         markup.row(
             InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}"),
             InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
             InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
+        )
+        
+    # 2. 🌟 載入專屬運費按鈕
+    markup.row(InlineKeyboardButton("─── 🚚 附加運費選項 ───", callback_data="ignore"))
+    for ship_key, ship_info in SHIPPING_PRICES.items():
+        ship_name = ship_info["name"]
+        ship_price = ship_info["price"]
+        qty = user_carts[chat_id].get(ship_key, 0)
+        
+        markup.row(
+            InlineKeyboardButton("➖", callback_data=f"sub_{ship_key}"),
+            InlineKeyboardButton(f"{ship_name} : {qty}", callback_data="ignore"),
+            InlineKeyboardButton("➕", callback_data=f"add_{ship_key}")
         )
         
     markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
@@ -235,7 +251,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
         
-    # 防止點到品名或數字按鈕時出錯
     if data == "ignore":
         bot.answer_callback_query(call.id)
         return
@@ -353,8 +368,16 @@ def handle_query(call):
         msg = "🛒 <b>您的購物車清單：</b>\n\n"
         total = 0
         df_sum = pd.DataFrame(get_cached_catalog())
-        for p_name, qty in cart.items():
-            unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_name, '零售價'].values[0])
+        
+        # 🌟 結算時判斷是實體商品還是運費
+        for p_key, qty in cart.items():
+            if p_key in SHIPPING_PRICES:
+                p_name = SHIPPING_PRICES[p_key]["name"]
+                unit_price = SHIPPING_PRICES[p_key]["price"]
+            else:
+                p_name = p_key
+                unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_key, '零售價'].values[0])
+                
             total += unit_price * qty
             msg += f"▪️ {p_name} x {qty}\n"
             
@@ -384,14 +407,22 @@ def handle_query(call):
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
             order_total_price = 0
-            for prod_name, qty in cart.items():
-                unit_price = int(df_sum.loc[df_sum['產品名稱'] == prod_name, '零售價'].values[0])
+            
+            # 🌟 寫入試算表時判斷是實體商品還是運費
+            for p_key, qty in cart.items():
+                if p_key in SHIPPING_PRICES:
+                    prod_name = SHIPPING_PRICES[p_key]["name"]
+                    unit_price = SHIPPING_PRICES[p_key]["price"]
+                else:
+                    prod_name = p_key
+                    unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_key, '零售價'].values[0])
+                    
                 total_price = unit_price * qty
                 order_total_price += total_price
                 ws_log.append_rows([[now_str, order_id, prod_name, qty, total_price, channel, customer, "TG智慧單品"]])
                 
             user_carts[chat_id] = {} 
-            bot.send_message(chat_id, f"🎉 <b>訂單建立成功！</b>\n單號：<code>{order_id}</code>\n客戶：{customer}\n通路：{channel}\n總計：<b>${order_total_price:,}</b>\n✅ 庫存已即時扣除！", parse_mode="HTML")
+            bot.send_message(chat_id, f"🎉 <b>訂單建立成功！</b>\n單號：<code>{order_id}</code>\n客戶：{customer}\n通路：{channel}\n總計：<b>${order_total_price:,}</b>\n✅ 紀錄已同步至資料庫！", parse_mode="HTML")
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ 結帳發生錯誤：{e}")
 
@@ -415,7 +446,7 @@ def process_customer_name(message):
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (雙層防截斷版) 啟動中...")
+    print("🤖 雲端版機器人 (含運費按鈕版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
