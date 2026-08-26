@@ -77,6 +77,18 @@ def process_password(message):
 user_carts = {}
 user_checkout_data = {}
 
+# 🌟 為了讓按鈕瞬間反應，新增「快取系統」，避免快速點擊時 Google 讀取超時
+global_catalog = []
+last_fetch_time = 0
+
+def get_cached_catalog():
+    global global_catalog, last_fetch_time
+    # 每 60 秒才去 Google 更新一次菜單，點擊按鈕時直接從記憶體拿，速度才會快！
+    if not global_catalog or time.time() - last_fetch_time > 60:
+        global_catalog = ws_summary.get_all_records()
+        last_fetch_time = time.time()
+    return global_catalog
+
 # ================= 3. 選單與對話攔截 =================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -164,45 +176,49 @@ def draw_lottery(message):
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("👤 公平抽獎 (每人一票)", callback_data="lottery_fair"),
-        InlineKeyboardButton("🎟️ 狂熱抽獎 (按消費次數提升機率)", callback_data="lottery_weighted"),
-        InlineKeyboardButton("💰 VIP 抽獎 (總消費滿 $1000)", callback_data="lottery_vip")
+        InlineKeyboardButton("🎟️ 狂熱抽獎 (按消費次數)", callback_data="lottery_weighted"),
+        InlineKeyboardButton("💰 VIP 抽獎 (消費滿 $1000)", callback_data="lottery_vip")
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
+# 🌟 生成「動態購物車」介面的專屬函數
+def get_shop_content(chat_id):
+    if chat_id not in user_carts:
+        user_carts[chat_id] = {}
+        
+    records = get_cached_catalog()
+    markup = InlineKeyboardMarkup()
+    menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n"
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    for idx, row in enumerate(records):
+        prod_name = row['產品名稱']
+        price = row['零售價']
+        icon = emojis[idx] if idx < len(emojis) else f"({idx+1})"
+        
+        # 抓取目前這個人購物車裡，這個商品的數量 (預設為0)
+        qty = user_carts[chat_id].get(prod_name, 0)
+        
+        menu_text += f"{icon} {prod_name} <code>(${price:,})</code>\n"
+        
+        # 🌟 核心魔法： [ 代號 ] [ ➖ ] [ 數量 ] [ ➕ ] 完美並排！
+        markup.row(
+            InlineKeyboardButton(f"{icon}", callback_data="ignore"),
+            InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}"),
+            InlineKeyboardButton(f"{qty}", callback_data="ignore"),
+            InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
+        )
+        
+    menu_text += "\n👇 <b>請點擊 ➕ ➖ 按鈕調整數量：</b>"
+    markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
+    markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
+    
+    return menu_text, markup
+
 def show_shop(message):
     chat_id = message.chat.id
-    if chat_id not in user_carts:
-        user_carts[chat_id] = {} 
-        
     try:
-        df_sum = pd.DataFrame(ws_summary.get_all_records())
-        markup = InlineKeyboardMarkup()
-        
-        # 準備文字菜單
-        menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n"
-        emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-        
-        for idx, row in df_sum.iterrows():
-            prod_name = row['產品名稱']
-            price = row['零售價']
-            
-            # 給每個商品一個專屬代號
-            icon = emojis[idx] if idx < len(emojis) else f"({idx+1})"
-            
-            # 把商品名稱和價格印在「對話文字」裡
-            menu_text += f"{icon} {prod_name} <code>(${price:,})</code>\n"
-            
-            # 下方的按鈕只顯示簡短的「加號/減號 + 代號」
-            markup.row(
-                InlineKeyboardButton(f"➕ 新增 {icon}", callback_data=f"add_{prod_name}"),
-                InlineKeyboardButton(f"➖ 減少 {icon}", callback_data=f"sub_{prod_name}")
-            )
-            
-        menu_text += "\n👇 <b>請點擊下方對應的代號按鈕來增減商品：</b>"
-            
-        markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
-        markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
-        
+        menu_text, markup = get_shop_content(chat_id)
         bot.send_message(chat_id, menu_text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, f"載入目錄失敗：{e}")
@@ -222,8 +238,43 @@ def handle_query(call):
         bot.register_next_step_handler(msg, process_password)
         bot.answer_callback_query(call.id)
         return
+        
+    # 防止點到「代號」或「數字」本身出錯
+    if data == "ignore":
+        bot.answer_callback_query(call.id)
+        return
 
-    # 🌟 處理抽獎規則的核心邏輯
+    # 🌟 動態購物車：按 ➕ 的反應
+    if data.startswith("add_"):
+        prod_name = data.replace("add_", "")
+        if chat_id not in user_carts:
+            user_carts[chat_id] = {}
+            
+        user_carts[chat_id][prod_name] = user_carts[chat_id].get(prod_name, 0) + 1
+        bot.answer_callback_query(call.id) 
+        
+        # 重新生成畫面並「原地替換」按鈕上的數字
+        _, markup = get_shop_content(chat_id)
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
+        return
+
+    # 🌟 動態購物車：按 ➖ 的反應
+    elif data.startswith("sub_"):
+        prod_name = data.replace("sub_", "")
+        if chat_id in user_carts and user_carts[chat_id].get(prod_name, 0) > 0:
+            user_carts[chat_id][prod_name] -= 1
+            if user_carts[chat_id][prod_name] == 0:
+                del user_carts[chat_id][prod_name]
+            bot.answer_callback_query(call.id)
+            
+            # 重新生成畫面並「原地替換」按鈕上的數字
+            _, markup = get_shop_content(chat_id)
+            bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
+        else:
+            bot.answer_callback_query(call.id, "⚠️ 數量已經是 0 囉！", show_alert=True)
+        return
+
+    # 抽獎邏輯 (保持不變)
     if data.startswith("lottery_"):
         bot.answer_callback_query(call.id)
         try:
@@ -232,18 +283,15 @@ def handle_query(call):
                 bot.send_message(chat_id, "目前還沒有任何銷售紀錄，無法進行抽獎喔！")
                 return
                 
-            customer_column = '客戶' # 💡 若你的試算表標題不是客戶，請改這裡
+            customer_column = '客戶'
             if customer_column not in df_log.columns:
                 bot.send_message(chat_id, "⚠️ 試算表中找不到『客戶』欄位，請確認銷售紀錄表的標題。")
                 return
 
-            # 過濾掉空白名稱
             df_log = df_log[df_log[customer_column].astype(str).str.strip() != ""]
-            
             customers = []
             mode_name = ""
 
-            # 根據按鈕選擇不同的運算規則
             if data == "lottery_fair":
                 mode_name = "👤 公平抽獎"
                 customers = df_log[customer_column].unique().tolist()
@@ -260,7 +308,6 @@ def handle_query(call):
                 bot.send_message(chat_id, f"⚠️ 在【{mode_name}】規則下，沒有找到符合資格的客戶！")
                 return
 
-            # 列出參賽名單
             if data == "lottery_weighted":
                 ticket_counts = Counter(customers)
                 list_text = "、".join([f"{name}({count}票)" for name, count in ticket_counts.items()])
@@ -297,39 +344,23 @@ def handle_query(call):
             bot.send_message(chat_id, f"抽獎發生錯誤：{e}")
         return
 
-    # 🛒 購物車邏輯
-    if chat_id not in user_carts:
-        user_carts[chat_id] = {}
-
-    if data.startswith("add_"):
-        prod_name = data.replace("add_", "")
-        user_carts[chat_id][prod_name] = user_carts[chat_id].get(prod_name, 0) + 1
-        bot.answer_callback_query(call.id, f"✅ 已加入 1 件【{prod_name}】")
-
-    elif data.startswith("sub_"):
-        prod_name = data.replace("sub_", "")
-        if user_carts[chat_id].get(prod_name, 0) > 0:
-            user_carts[chat_id][prod_name] -= 1
-            if user_carts[chat_id][prod_name] == 0:
-                del user_carts[chat_id][prod_name]
-            bot.answer_callback_query(call.id, f"➖ 已拿出一件【{prod_name}】")
-        else:
-            bot.answer_callback_query(call.id, f"⚠️ 購物車裡已經沒有【{prod_name}】囉！", show_alert=True)
-
-    elif data == "clear_cart":
+    # 其他購物車功能
+    if data == "clear_cart":
         user_carts[chat_id] = {}
         bot.answer_callback_query(call.id, "🗑️ 購物車已全部清空！", show_alert=True)
-        bot.send_message(chat_id, "🗑️ 您的購物車已清空，可點選下方選單重新開始。")
+        # 清空後也要刷新一下數字畫面
+        _, markup = get_shop_content(chat_id)
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
 
     elif data == "view_cart":
-        cart = user_carts[chat_id]
+        cart = user_carts.get(chat_id, {})
         if not cart:
             bot.answer_callback_query(call.id, "⚠️ 購物車目前是空的喔！", show_alert=True)
             return
             
         msg = "🛒 <b>您的購物車清單：</b>\n\n"
         total = 0
-        df_sum = pd.DataFrame(ws_summary.get_all_records())
+        df_sum = pd.DataFrame(get_cached_catalog())
         for p_name, qty in cart.items():
             unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_name, '零售價'].values[0])
             total += unit_price * qty
@@ -357,7 +388,7 @@ def handle_query(call):
             bot.send_message(chat_id, "⚠️ 購物車已失效，請重新下單。")
             return
         try:
-            df_sum = pd.DataFrame(ws_summary.get_all_records())
+            df_sum = pd.DataFrame(get_cached_catalog())
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
             order_total_price = 0
@@ -392,7 +423,7 @@ def process_customer_name(message):
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (終極代號菜單版) 啟動中...")
+    print("🤖 雲端版機器人 (完美動態數字版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
