@@ -76,18 +76,17 @@ def process_password(message):
 # ================= 🛒 系統狀態記憶體與快取 =================
 user_carts = {}
 user_checkout_data = {}
+user_pages = {} # 🌟 新增：記錄每個客人在看第幾頁
 
 global_catalog = []
 last_fetch_time = 0
 
-# 🚚 運費設定區
 SHIPPING_PRICES = {
     "ship_38": {"name": "📦 賣貨便運費", "price": 38},
     "ship_60": {"name": "📦 店到店運費", "price": 60},
     "ship_100": {"name": "📦 宅配運費", "price": 100}
 }
 
-# 🎁 贈品設定區 (自動以 0 元計價，但會扣除庫存)
 GIFT_ITEMS = [
     "旅行瓶-沐浴露 60ml",
     "旅行瓶-髮膜 50ml",
@@ -139,7 +138,7 @@ def check_stock(message):
         reply = "📦 <b>【即時庫存狀態】</b>\n\n"
         for _, row in df_sum.iterrows():
             stock_qty = row['剩餘庫存']
-            alert = " 🚨(即將缺貨)" if stock_qty <= 3 else ""
+            alert = " 🚨(缺貨)" if stock_qty <= 3 else ""
             reply += f"▪️ {row['產品名稱']}: <code>{stock_qty}</code> 件{alert}\n"
         bot.reply_to(message, reply, parse_mode="HTML")
     except Exception as e:
@@ -194,56 +193,67 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 生成「動態購物車」介面
+# 🌟 突破極限的分頁生成器
 def get_shop_content(chat_id):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
-        
+    
+    page = user_pages.get(chat_id, 1)
     records = get_cached_catalog()
-    markup = InlineKeyboardMarkup()
     
-    menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n👇 <b>請點擊下方按鈕選購：</b>"
+    # 統整所有商品、贈品與運費，製作大清單
+    all_items = []
     
-    # 1. 載入常規實體商品
     for row in records:
-        prod_name = row['產品名稱']
-        price = row['零售價']
-        qty = user_carts[chat_id].get(prod_name, 0)
+        all_items.append({"id": row['產品名稱'], "display": f"🔹 {row['產品名稱']}", "price": row['零售價']})
         
-        markup.row(InlineKeyboardButton(f"🔹 {prod_name} (${price:,})", callback_data="ignore"))
-        markup.row(
-            InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}"),
-            InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
-            InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
-        )
+    for gift in GIFT_ITEMS:
+        all_items.append({"id": f"gift_{gift}", "display": f"🎁 贈品：{gift}", "price": 0})
         
-    # 2. 🌟 載入專屬贈品按鈕 (0元扣庫存)
-    markup.row(InlineKeyboardButton("─── 🎁 贈品選項 (扣庫存/0元) ───", callback_data="ignore"))
-    for gift_name in GIFT_ITEMS:
-        gift_key = f"gift_{gift_name}"
-        qty = user_carts[chat_id].get(gift_key, 0)
-        
-        markup.row(InlineKeyboardButton(f"🎁 贈品：{gift_name} ($0)", callback_data="ignore"))
-        markup.row(
-            InlineKeyboardButton("➖", callback_data=f"sub_{gift_key}"),
-            InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
-            InlineKeyboardButton("➕", callback_data=f"add_{gift_key}")
-        )
-        
-    # 3. 載入運費按鈕
-    markup.row(InlineKeyboardButton("─── 🚚 附加運費選項 ───", callback_data="ignore"))
     for ship_key, ship_info in SHIPPING_PRICES.items():
-        ship_name = ship_info["name"]
-        ship_price = ship_info["price"]
-        qty = user_carts[chat_id].get(ship_key, 0)
+        all_items.append({"id": ship_key, "display": ship_info['name'], "price": ship_info['price']})
+
+    # 分頁邏輯運算 (每頁 15 個商品)
+    PAGE_SIZE = 15
+    total_items = len(all_items)
+    total_pages = (total_items + PAGE_SIZE - 1) // PAGE_SIZE
+    
+    if page > total_pages: page = total_pages
+    if page < 1: page = 1
+    
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    page_items = all_items[start_idx:end_idx]
+
+    markup = InlineKeyboardMarkup()
+    menu_text = f"🛍 <b>VIIYASIY 產品目錄</b> <code>(第 {page}/{total_pages} 頁)</code>\n\n👇 <b>請點擊下方按鈕選購：</b>"
+    
+    for item in page_items:
+        item_id = item["id"]
+        qty = user_carts[chat_id].get(item_id, 0)
         
-        markup.row(InlineKeyboardButton(f"{ship_name} (${ship_price})", callback_data="ignore"))
+        markup.row(InlineKeyboardButton(f"{item['display']} (${item['price']:,})", callback_data="ignore"))
         markup.row(
-            InlineKeyboardButton("➖", callback_data=f"sub_{ship_key}"),
+            InlineKeyboardButton("➖", callback_data=f"sub_{item_id}"),
             InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
-            InlineKeyboardButton("➕", callback_data=f"add_{ship_key}")
+            InlineKeyboardButton("➕", callback_data=f"add_{item_id}")
         )
+
+    # 🌟 生成翻頁控制區
+    pagination_row = []
+    if page > 1:
+        pagination_row.append(InlineKeyboardButton("⬅️ 上一頁", callback_data="page_prev"))
+    else:
+        pagination_row.append(InlineKeyboardButton("🚫", callback_data="ignore"))
         
+    pagination_row.append(InlineKeyboardButton(f"📄 {page} / {total_pages}", callback_data="ignore"))
+    
+    if page < total_pages:
+        pagination_row.append(InlineKeyboardButton("下一頁 ➡️", callback_data="page_next"))
+    else:
+        pagination_row.append(InlineKeyboardButton("🚫", callback_data="ignore"))
+        
+    markup.row(*pagination_row)
     markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
     markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
     
@@ -277,12 +287,27 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 動態購物車：按 ➕ 的反應
+    # 🌟 處理翻頁邏輯
+    if data == "page_prev":
+        current_page = user_pages.get(chat_id, 1)
+        if current_page > 1:
+            user_pages[chat_id] = current_page - 1
+            menu_text, markup = get_shop_content(chat_id)
+            bot.edit_message_text(text=menu_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+        bot.answer_callback_query(call.id)
+        return
+        
+    if data == "page_next":
+        current_page = user_pages.get(chat_id, 1)
+        user_pages[chat_id] = current_page + 1
+        menu_text, markup = get_shop_content(chat_id)
+        bot.edit_message_text(text=menu_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+        bot.answer_callback_query(call.id)
+        return
+
     if data.startswith("add_"):
         prod_name = data.replace("add_", "")
-        if chat_id not in user_carts:
-            user_carts[chat_id] = {}
-            
+        if chat_id not in user_carts: user_carts[chat_id] = {}
         user_carts[chat_id][prod_name] = user_carts[chat_id].get(prod_name, 0) + 1
         bot.answer_callback_query(call.id) 
         
@@ -290,13 +315,11 @@ def handle_query(call):
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         return
 
-    # 🌟 動態購物車：按 ➖ 的反應
     elif data.startswith("sub_"):
         prod_name = data.replace("sub_", "")
         if chat_id in user_carts and user_carts[chat_id].get(prod_name, 0) > 0:
             user_carts[chat_id][prod_name] -= 1
-            if user_carts[chat_id][prod_name] == 0:
-                del user_carts[chat_id][prod_name]
+            if user_carts[chat_id][prod_name] == 0: del user_carts[chat_id][prod_name]
             bot.answer_callback_query(call.id)
             
             _, markup = get_shop_content(chat_id)
@@ -347,30 +370,14 @@ def handle_query(call):
                 list_text = "、".join(customers)
                 participant_info = f"共 {len(customers)} 人參與"
 
-            bot.send_message(
-                chat_id, 
-                f"📋 <b>【{mode_name}】符合資格名單：</b>\n"
-                f"({participant_info})\n\n"
-                f"<code>{list_text}</code>", 
-                parse_mode="HTML"
-            )
-
+            bot.send_message(chat_id, f"📋 <b>【{mode_name}】符合資格名單：</b>\n({participant_info})\n\n<code>{list_text}</code>", parse_mode="HTML")
             time.sleep(1.5)
             bot.send_message(chat_id, f"🎰 <b>系統正在為您抽出幸運兒...</b>", parse_mode="HTML")
             dice_msg = bot.send_dice(chat_id, emoji='🎰')
             time.sleep(3.5)
             
             winner = random.choice(customers)
-            
-            bot.send_message(
-                chat_id, 
-                f"🎊 <b>【{mode_name}】結果出爐！</b> 🎊\n\n"
-                f"恭喜本次的幸運得主是：\n"
-                f"🏆 <code>{winner}</code>\n\n"
-                f"趕快去私訊他領獎吧！", 
-                reply_to_message_id=dice_msg.message_id,
-                parse_mode="HTML"
-            )
+            bot.send_message(chat_id, f"🎊 <b>【{mode_name}】結果出爐！</b> 🎊\n\n恭喜幸運得主：\n🏆 <code>{winner}</code>\n\n趕快去私訊領獎吧！", reply_to_message_id=dice_msg.message_id, parse_mode="HTML")
         except Exception as e:
             bot.send_message(chat_id, f"抽獎發生錯誤：{e}")
         return
@@ -391,13 +398,11 @@ def handle_query(call):
         total = 0
         df_sum = pd.DataFrame(get_cached_catalog())
         
-        # 🌟 結算區 (自動判斷贈品金額為 $0)
         for p_key, qty in cart.items():
             if p_key in SHIPPING_PRICES:
                 p_name = SHIPPING_PRICES[p_key]["name"]
                 unit_price = SHIPPING_PRICES[p_key]["price"]
             elif p_key.startswith("gift_"):
-                # 如果是贈品，顯示時加上 🎁，單價強制為 0
                 p_name = "🎁 " + p_key.replace("gift_", "")
                 unit_price = 0
             else:
@@ -434,18 +439,15 @@ def handle_query(call):
             order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
             order_total_price = 0
             
-            # 🌟 寫入試算表區 (精準還原品名以利扣除庫存)
             for p_key, qty in cart.items():
-                order_type = "TG智慧單品" # 預設類型
-                
+                order_type = "TG智慧單品" 
                 if p_key in SHIPPING_PRICES:
                     prod_name = SHIPPING_PRICES[p_key]["name"]
                     unit_price = SHIPPING_PRICES[p_key]["price"]
                 elif p_key.startswith("gift_"):
-                    # 寫回資料庫時，必須用真正的名字 (例如：旅行瓶-沐浴露 60ml)
                     prod_name = p_key.replace("gift_", "") 
                     unit_price = 0
-                    order_type = "TG贈品" # 在最後一欄特別標記為贈品
+                    order_type = "TG贈品" 
                 else:
                     prod_name = p_key
                     unit_price = int(df_sum.loc[df_sum['產品名稱'] == p_key, '零售價'].values[0])
@@ -461,25 +463,20 @@ def handle_query(call):
 
 def process_customer_name(message):
     chat_id = message.chat.id
-    if not is_authorized(chat_id):
-        return
-        
+    if not is_authorized(chat_id): return
     customer_name = message.text
     user_checkout_data[chat_id] = customer_name 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📱 IG私訊", callback_data="channel_IG私訊"),
-        InlineKeyboardButton("📦 賣貨便", callback_data="channel_賣貨便")
-    )
-    markup.add(
+        InlineKeyboardButton("📦 賣貨便", callback_data="channel_賣貨便"),
         InlineKeyboardButton("🦐 蝦皮", callback_data="channel_蝦皮"),
         InlineKeyboardButton("🤝 親友/面交", callback_data="channel_親友/面交")
     )
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
-# ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (完美贈品管理版) 啟動中...")
+    print("🤖 雲端版機器人 (完美分頁系統版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
