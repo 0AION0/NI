@@ -179,7 +179,7 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 生成「動態購物車」介面的專屬函數 (三明治排版升級版)
+# 🌟 生成「動態購物車」介面 (完美雙層排列版，解決字體截斷問題)
 def get_shop_content(chat_id):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
@@ -187,24 +187,25 @@ def get_shop_content(chat_id):
     records = get_cached_catalog()
     markup = InlineKeyboardMarkup()
     
-    menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n"
+    menu_text = "🛍 <b>VIIYASIY 產品目錄</b>\n\n👇 <b>請點擊下方按鈕選購：</b>"
     
     for row in records:
         prod_name = row['產品名稱']
         price = row['零售價']
         qty = user_carts[chat_id].get(prod_name, 0)
         
-        menu_text += f"▪️ {prod_name} <code>(${price:,})</code>\n"
+        # 第一層：滿版寬度的商品名稱與價格 (絕對不會被切斷)
+        markup.row(
+            InlineKeyboardButton(f"🔹 {prod_name} (${price:,})", callback_data="ignore")
+        )
         
-        # 🌟 核心魔法： [ ➖ ] [ 品名 (數量) ] [ ➕ ]
+        # 第二層：下方的動態數字加減按鈕
         markup.row(
             InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}"),
-            InlineKeyboardButton(f"{prod_name} ({qty})", callback_data="ignore"),
+            InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
             InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
         )
         
-    menu_text += "\n👇 <b>請點擊 ➕ ➖ 按鈕調整數量：</b>"
-    
     markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
     markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
     
@@ -234,10 +235,12 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
         
+    # 防止點到品名或數字按鈕時出錯
     if data == "ignore":
         bot.answer_callback_query(call.id)
         return
 
+    # 🌟 動態購物車：按 ➕ 的反應
     if data.startswith("add_"):
         prod_name = data.replace("add_", "")
         if chat_id not in user_carts:
@@ -250,6 +253,7 @@ def handle_query(call):
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         return
 
+    # 🌟 動態購物車：按 ➖ 的反應
     elif data.startswith("sub_"):
         prod_name = data.replace("sub_", "")
         if chat_id in user_carts and user_carts[chat_id].get(prod_name, 0) > 0:
@@ -264,7 +268,7 @@ def handle_query(call):
             bot.answer_callback_query(call.id, "⚠️ 數量已經是 0 囉！", show_alert=True)
         return
 
-    # 抽獎邏輯 (修復字串錯誤版)
+    # 抽獎邏輯
     if data.startswith("lottery_"):
         bot.answer_callback_query(call.id)
         try:
@@ -321,7 +325,6 @@ def handle_query(call):
             
             winner = random.choice(customers)
             
-            # 👇 這裡的錯誤字串已完全修復完畢
             bot.send_message(
                 chat_id, 
                 f"🎊 <b>【{mode_name}】結果出爐！</b> 🎊\n\n"
@@ -412,7 +415,7 @@ def process_customer_name(message):
 
 # ================= 6. 啟動機器人 =================
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (完美修復版) 啟動中...")
+    print("🤖 雲端版機器人 (雙層防截斷版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
