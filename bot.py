@@ -76,7 +76,7 @@ def process_password(message):
 # ================= 🛒 系統狀態記憶體與快取 =================
 user_carts = {}
 user_checkout_data = {}
-user_pages = {} # 🌟 新增：記錄每個客人在看第幾頁
+user_shop_step = {} # 紀錄用戶在第一步還是第二步
 
 global_catalog = []
 last_fetch_time = 0
@@ -193,76 +193,77 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 突破極限的分頁生成器
-def get_shop_content(chat_id):
+# 🌟 兩步驟流暢生成器 (完美避開100按鈕限制)
+def get_shop_content(chat_id, step="main"):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
-    
-    page = user_pages.get(chat_id, 1)
-    records = get_cached_catalog()
-    
-    # 統整所有商品、贈品與運費，製作大清單
-    all_items = []
-    
-    for row in records:
-        all_items.append({"id": row['產品名稱'], "display": f"🔹 {row['產品名稱']}", "price": row['零售價']})
         
-    for gift in GIFT_ITEMS:
-        all_items.append({"id": f"gift_{gift}", "display": f"🎁 贈品：{gift}", "price": 0})
-        
-    for ship_key, ship_info in SHIPPING_PRICES.items():
-        all_items.append({"id": ship_key, "display": ship_info['name'], "price": ship_info['price']})
-
-    # 分頁邏輯運算 (每頁 15 個商品)
-    PAGE_SIZE = 15
-    total_items = len(all_items)
-    total_pages = (total_items + PAGE_SIZE - 1) // PAGE_SIZE
-    
-    if page > total_pages: page = total_pages
-    if page < 1: page = 1
-    
-    start_idx = (page - 1) * PAGE_SIZE
-    end_idx = start_idx + PAGE_SIZE
-    page_items = all_items[start_idx:end_idx]
-
     markup = InlineKeyboardMarkup()
-    menu_text = f"🛍 <b>VIIYASIY 產品目錄</b> <code>(第 {page}/{total_pages} 頁)</code>\n\n👇 <b>請點擊下方按鈕選購：</b>"
     
-    for item in page_items:
-        item_id = item["id"]
-        qty = user_carts[chat_id].get(item_id, 0)
+    # 🛒 第一步：常規商品
+    if step == "main":
+        menu_text = "🛍 <b>VIIYASIY 產品目錄 (1/2)</b>\n\n👇 <b>請選購常規商品：</b>"
+        # 為了避免超出Telegram限制，強制最多只載入前 24 樣實體商品
+        records = get_cached_catalog()[:24] 
         
-        markup.row(InlineKeyboardButton(f"{item['display']} (${item['price']:,})", callback_data="ignore"))
-        markup.row(
-            InlineKeyboardButton("➖", callback_data=f"sub_{item_id}"),
-            InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
-            InlineKeyboardButton("➕", callback_data=f"add_{item_id}")
-        )
+        for row in records:
+            prod_name = row['產品名稱']
+            price = row['零售價']
+            qty = user_carts[chat_id].get(prod_name, 0)
+            
+            markup.row(InlineKeyboardButton(f"🔹 {prod_name} (${price:,})", callback_data="ignore"))
+            markup.row(
+                InlineKeyboardButton("➖", callback_data=f"sub_{prod_name}"),
+                InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
+                InlineKeyboardButton("➕", callback_data=f"add_{prod_name}")
+            )
+            
+        # 最下方的切換按鈕
+        markup.row(InlineKeyboardButton("➡️ 下一步 (選擇贈品與運費) ➡️", callback_data="shop_addon"))
+        markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
 
-    # 🌟 生成翻頁控制區
-    pagination_row = []
-    if page > 1:
-        pagination_row.append(InlineKeyboardButton("⬅️ 上一頁", callback_data="page_prev"))
-    else:
-        pagination_row.append(InlineKeyboardButton("🚫", callback_data="ignore"))
+    # 🎁 第二步：贈品與運費
+    elif step == "addon":
+        menu_text = "🛍 <b>VIIYASIY 附加項目 (2/2)</b>\n\n👇 <b>請選擇贈品與運費：</b>"
         
-    pagination_row.append(InlineKeyboardButton(f"📄 {page} / {total_pages}", callback_data="ignore"))
-    
-    if page < total_pages:
-        pagination_row.append(InlineKeyboardButton("下一頁 ➡️", callback_data="page_next"))
-    else:
-        pagination_row.append(InlineKeyboardButton("🚫", callback_data="ignore"))
+        # 載入贈品
+        markup.row(InlineKeyboardButton("─── 🎁 贈品選項 (扣庫存/0元) ───", callback_data="ignore"))
+        for gift_name in GIFT_ITEMS:
+            gift_key = f"gift_{gift_name}"
+            qty = user_carts[chat_id].get(gift_key, 0)
+            
+            markup.row(InlineKeyboardButton(f"🎁 贈品：{gift_name} ($0)", callback_data="ignore"))
+            markup.row(
+                InlineKeyboardButton("➖", callback_data=f"sub_{gift_key}"),
+                InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
+                InlineKeyboardButton("➕", callback_data=f"add_{gift_key}")
+            )
+            
+        # 載入運費
+        markup.row(InlineKeyboardButton("─── 🚚 附加運費選項 ───", callback_data="ignore"))
+        for ship_key, ship_info in SHIPPING_PRICES.items():
+            ship_name = ship_info["name"]
+            ship_price = ship_info["price"]
+            qty = user_carts[chat_id].get(ship_key, 0)
+            
+            markup.row(InlineKeyboardButton(f"{ship_name} (${ship_price})", callback_data="ignore"))
+            markup.row(
+                InlineKeyboardButton("➖", callback_data=f"sub_{ship_key}"),
+                InlineKeyboardButton(f"數量：{qty}", callback_data="ignore"),
+                InlineKeyboardButton("➕", callback_data=f"add_{ship_key}")
+            )
+            
+        # 最下方的切換按鈕
+        markup.row(InlineKeyboardButton("🔙 回上一步 (常規商品)", callback_data="shop_main"))
+        markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
         
-    markup.row(*pagination_row)
-    markup.row(InlineKeyboardButton("🛒 查看購物車並結帳", callback_data="view_cart"))
-    markup.row(InlineKeyboardButton("🗑️ 清空購物車", callback_data="clear_cart"))
-    
     return menu_text, markup
 
 def show_shop(message):
     chat_id = message.chat.id
     try:
-        menu_text, markup = get_shop_content(chat_id)
+        user_shop_step[chat_id] = "main" # 預設開啟第一步
+        menu_text, markup = get_shop_content(chat_id, "main")
         bot.send_message(chat_id, menu_text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, f"載入目錄失敗：{e}")
@@ -287,31 +288,30 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 處理翻頁邏輯
-    if data == "page_prev":
-        current_page = user_pages.get(chat_id, 1)
-        if current_page > 1:
-            user_pages[chat_id] = current_page - 1
-            menu_text, markup = get_shop_content(chat_id)
-            bot.edit_message_text(text=menu_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    # 🌟 處理「下一步」與「上一步」的切換
+    if data == "shop_addon":
+        user_shop_step[chat_id] = "addon"
+        menu_text, markup = get_shop_content(chat_id, "addon")
+        bot.edit_message_text(text=menu_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
         bot.answer_callback_query(call.id)
         return
         
-    if data == "page_next":
-        current_page = user_pages.get(chat_id, 1)
-        user_pages[chat_id] = current_page + 1
-        menu_text, markup = get_shop_content(chat_id)
+    if data == "shop_main":
+        user_shop_step[chat_id] = "main"
+        menu_text, markup = get_shop_content(chat_id, "main")
         bot.edit_message_text(text=menu_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
         bot.answer_callback_query(call.id)
         return
 
+    # 動態購物車：加減數量
     if data.startswith("add_"):
         prod_name = data.replace("add_", "")
         if chat_id not in user_carts: user_carts[chat_id] = {}
         user_carts[chat_id][prod_name] = user_carts[chat_id].get(prod_name, 0) + 1
         bot.answer_callback_query(call.id) 
         
-        _, markup = get_shop_content(chat_id)
+        current_step = user_shop_step.get(chat_id, "main")
+        _, markup = get_shop_content(chat_id, current_step)
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         return
 
@@ -322,7 +322,8 @@ def handle_query(call):
             if user_carts[chat_id][prod_name] == 0: del user_carts[chat_id][prod_name]
             bot.answer_callback_query(call.id)
             
-            _, markup = get_shop_content(chat_id)
+            current_step = user_shop_step.get(chat_id, "main")
+            _, markup = get_shop_content(chat_id, current_step)
             bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         else:
             bot.answer_callback_query(call.id, "⚠️ 數量已經是 0 囉！", show_alert=True)
@@ -385,7 +386,8 @@ def handle_query(call):
     if data == "clear_cart":
         user_carts[chat_id] = {}
         bot.answer_callback_query(call.id, "🗑️ 購物車已全部清空！", show_alert=True)
-        _, markup = get_shop_content(chat_id)
+        current_step = user_shop_step.get(chat_id, "main")
+        _, markup = get_shop_content(chat_id, current_step)
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
 
     elif data == "view_cart":
@@ -476,7 +478,7 @@ def process_customer_name(message):
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (完美分頁系統版) 啟動中...")
+    print("🤖 雲端版機器人 (兩步驟無分頁版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
