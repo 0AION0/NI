@@ -57,7 +57,6 @@ def show_main_menu(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🛍️ 開始購物"), KeyboardButton("📦 查詢庫存"))
     markup.add(KeyboardButton("📈 營收報表"), KeyboardButton("🎉 幸運抽獎"))
-    # 🌟 在選單新增「查詢訂單」按鈕
     markup.add(KeyboardButton("🔍 查詢訂單"), KeyboardButton("❓ 系統說明"))
     bot.send_message(message.chat.id, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b>\n請直接點擊下方按鈕開始操作 👇", reply_markup=markup, parse_mode="HTML")
 
@@ -112,7 +111,6 @@ def send_welcome(message):
         return
     show_main_menu(message)
 
-# 🌟 攔截清單加入「🔍 查詢訂單」
 @bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📦 查詢庫存", "📈 營收報表", "🎉 幸運抽獎", "🔍 查詢訂單", "❓ 系統說明"])
 def handle_menu_buttons(message):
     if not is_authorized(message.chat.id):
@@ -131,14 +129,12 @@ def handle_menu_buttons(message):
     elif text == "🎉 幸運抽獎":
         draw_lottery(message)
     elif text == "🔍 查詢訂單":
-        # 🌟 觸發查詢流程
         msg = bot.send_message(message.chat.id, "🔍 <b>請直接打字輸入要查詢的「客戶名稱」或「IG 帳號」：</b>\n(支援模糊搜尋，例如輸入 amy 即可找到 @amy_123)", parse_mode="HTML")
         bot.register_next_step_handler(msg, process_order_search)
     elif text == "❓ 系統說明":
         send_welcome(message)
 
 # ================= 4. 核心功能區 =================
-# 🌟 新增：查詢訂單的核心處理函數
 def process_order_search(message):
     chat_id = message.chat.id
     if not is_authorized(chat_id): return
@@ -157,19 +153,15 @@ def process_order_search(message):
             bot.send_message(chat_id, "⚠️ 試算表中找不到『客戶』欄位。")
             return
             
-        # 模糊搜尋：不管大小寫，只要名字裡包含輸入的字就會抓出來
         matched_df = df_log[df_log[customer_col].astype(str).str.contains(search_name, case=False, na=False)]
         
         if matched_df.empty:
             bot.send_message(chat_id, f"❌ 找不到與「<b>{search_name}</b>」相關的歷史訂單紀錄。", parse_mode="HTML")
             return
             
-        # 確保金額格式正確以便加總
         matched_df['銷售總額'] = pd.to_numeric(matched_df['銷售總額'], errors='coerce').fillna(0)
         
         reply_text = f"📋 <b>為您找到以下關於「{search_name}」的訂單：</b>\n\n"
-        
-        # 按照「訂單編號」將商品群組化，避免同一單出現好幾次
         grouped = matched_df.groupby('訂單編號')
         
         for order_id, group in grouped:
@@ -191,7 +183,6 @@ def process_order_search(message):
             reply_text += f"💰 <b>總金額：${order_total:,.0f}</b>\n"
             reply_text += "➖➖➖➖➖➖➖➖\n"
             
-        # 避免文字過長超過 Telegram 限制
         if len(reply_text) > 4000:
             reply_text = reply_text[:4000] + "...\n(資料過多，僅顯示近期紀錄)"
             
@@ -200,7 +191,6 @@ def process_order_search(message):
     except Exception as e:
         bot.send_message(chat_id, f"查詢發生錯誤：{e}")
 
-# 以下為原本的其他功能區塊
 def check_stock(message):
     try:
         df_sum = pd.DataFrame(ws_summary.get_all_records())
@@ -221,6 +211,14 @@ def check_report(message):
             bot.reply_to(message, "目前還沒有任何銷售紀錄喔！")
             return
 
+        # 🌟 核心過濾機制：從報表中剔除「運費」與「贈品」
+        # 1. 排除運費 (品名包含"運費")
+        df_log = df_log[~df_log['產品名稱'].astype(str).str.contains('運費', na=False)]
+        
+        # 2. 排除贈品 (如果有訂單類型欄位，排除 TG贈品)
+        if '訂單類型' in df_log.columns:
+            df_log = df_log[df_log['訂單類型'] != 'TG贈品']
+
         df_log['銷售總額'] = pd.to_numeric(df_log['銷售總額'], errors='coerce').fillna(0)
         df_log['售出數量'] = pd.to_numeric(df_log['售出數量'], errors='coerce').fillna(0)
         
@@ -230,11 +228,11 @@ def check_report(message):
         total_cost = (df_merged['售出數量'] * df_merged['進貨成本']).sum()
         net_profit = total_revenue - total_cost
         
-        reply_text = (f"📈 <b>【營收利潤戰情版】</b>\n\n"
-                      f"💰 累積總營收：<code>${total_revenue:,.0f}</code>\n"
-                      f"📦 總出貨成本：<code>${total_cost:,.0f}</code>\n"
-                      f"🏆 目前淨利潤：<code>${net_profit:,.0f}</code>\n\n"
-                      f"🔥 <b>【熱銷商品排行 (數量)】</b>\n")
+        reply_text = (f"📈 <b>【純淨商品營收戰情版】</b>\n\n"
+                      f"💰 實際商品營收：<code>${total_revenue:,.0f}</code>\n"
+                      f"📦 商品出貨成本：<code>${total_cost:,.0f}</code>\n"
+                      f"🏆 實際淨利潤：<code>${net_profit:,.0f}</code>\n\n"
+                      f"🔥 <b>【熱銷商品排行 (已排除贈品)】</b>\n")
 
         sales_ranking = df_log.groupby('產品名稱')['售出數量'].sum().reset_index()
         sales_ranking = sales_ranking.sort_values(by='售出數量', ascending=False)
@@ -537,7 +535,7 @@ def process_customer_name(message):
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (含查詢訂單版) 啟動中...")
+    print("🤖 雲端版機器人 (報表過濾優化版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
