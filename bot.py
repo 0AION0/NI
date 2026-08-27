@@ -64,7 +64,7 @@ def show_main_menu(message):
     markup.add(KeyboardButton("📦 查詢庫存"), KeyboardButton("📈 營收報表"))
     markup.add(KeyboardButton("🔍 查詢訂單"), KeyboardButton("🎉 幸運抽獎"))
     markup.add(KeyboardButton("❓ 系統說明"))
-    bot.send_message(message.chat.id, "🤖 <b>VIIYASIY 系統小秘書已解鎖！</b> 👇", reply_markup=markup, parse_mode="HTML")
+    bot.send_message(message.chat.id, "🤖 <b>XINNI很醜！</b> 👇", reply_markup=markup, parse_mode="HTML")
 
 def process_password(message):
     chat_id = message.chat.id
