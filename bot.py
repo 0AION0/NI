@@ -134,9 +134,8 @@ def handle_menu_buttons(message):
     elif text == "📥 進貨入庫":
         show_restock(message)
     elif text == "📦 查詢庫存":
-        check_stock(message)
+        check_stock(message) # 🌟 觸發絕對即時庫存
     elif text == "📈 營收報表":
-        # 🌟 優化1：跳出報表區間選擇
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("📅 本日營收", callback_data="report_today"))
         markup.row(InlineKeyboardButton("🗓️ 本月營收", callback_data="report_month"))
@@ -151,7 +150,26 @@ def handle_menu_buttons(message):
         send_welcome(message)
 
 # ================= 4. 核心功能區 =================
-# 🌟 優化2：動態生成區間報表與運費分離
+# 🌟 優化：強制即時抓取最新庫存
+def check_stock(message):
+    msg = bot.reply_to(message, "🔄 <b>正在與倉庫連線，抓取最即時庫存...</b>", parse_mode="HTML")
+    try:
+        force_refresh_cache() # 🌟 強制清空快取，強迫機器人重抓資料
+        df_sum = pd.DataFrame(get_cached_catalog())
+        reply = "📦 <b>【即時庫存狀態】</b>\n\n"
+        for _, row in df_sum.iterrows():
+            stock_qty = row.get('剩餘庫存', 0)
+            try:
+                qty_int = int(stock_qty)
+                alert = " 🚨(缺貨/即將售罄)" if qty_int <= 3 else ""
+            except:
+                alert = "" # 防止試算表格式錯誤導致崩潰
+            reply += f"▪️ {row.get('產品名稱', '未知')}: <code>{stock_qty}</code> 件{alert}\n"
+            
+        bot.edit_message_text(reply, chat_id=message.chat.id, message_id=msg.message_id, parse_mode="HTML")
+    except Exception as e:
+        bot.edit_message_text(f"查詢失敗：{e}", chat_id=message.chat.id, message_id=msg.message_id)
+
 def generate_report(chat_id, period, message_id):
     bot.edit_message_text("🔄 <b>正在計算營收報表，請稍候...</b>", chat_id=chat_id, message_id=message_id, parse_mode="HTML")
     try:
@@ -178,12 +196,10 @@ def generate_report(chat_id, period, message_id):
             bot.edit_message_text(f"⚠️ <b>{title_prefix}</b> 沒有任何銷售紀錄。", chat_id=chat_id, message_id=message_id, parse_mode="HTML")
             return
 
-        # 🚚 單獨抽出運費計算 (不干擾商品營收)
         df_ship = df_log[df_log['產品名稱'].astype(str).str.contains('運費', na=False)]
         df_ship['銷售總額'] = pd.to_numeric(df_ship['銷售總額'], errors='coerce').fillna(0)
         total_shipping = df_ship['銷售總額'].sum()
 
-        # 🎁 排除運費與贈品，計算純淨商品
         df_log = df_log[~df_log['產品名稱'].astype(str).str.contains('運費', na=False)]
         if '訂單類型' in df_log.columns:
             df_log = df_log[df_log['訂單類型'] != 'TG贈品']
@@ -252,7 +268,6 @@ def process_order_search(message):
         matched_df['銷售總額'] = pd.to_numeric(matched_df['銷售總額'], errors='coerce').fillna(0)
         grouped = matched_df.groupby('訂單編號')
         
-        # 🌟 優化2：只顯示最新 5 筆，防止大洗版
         recent_orders = list(grouped)[-5:]
         bot.send_message(chat_id, f"📋 <b>為您找到「{search_name}」的近期訂單：</b>", parse_mode="HTML")
         
@@ -272,25 +287,12 @@ def process_order_search(message):
                 
             reply_text += f"💰 <b>總金額：${order_total:,.0f}</b>"
             
-            # 🌟 優化2：每筆訂單附帶「撤銷」按鈕
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🗑️ 撤銷此筆訂單 (退回庫存)", callback_data=f"cancel_{order_id}"))
             bot.send_message(chat_id, reply_text, reply_markup=markup, parse_mode="HTML")
             
     except Exception as e:
         bot.send_message(chat_id, f"查詢發生錯誤：{e}")
-
-def check_stock(message):
-    try:
-        df_sum = pd.DataFrame(get_cached_catalog())
-        reply = "📦 <b>【即時庫存狀態】</b>\n\n"
-        for _, row in df_sum.iterrows():
-            stock_qty = row['剩餘庫存']
-            alert = " 🚨(缺貨)" if stock_qty <= 3 else ""
-            reply += f"▪️ {row['產品名稱']}: <code>{stock_qty}</code> 件{alert}\n"
-        bot.reply_to(message, reply, parse_mode="HTML")
-    except Exception as e:
-        bot.reply_to(message, f"查詢失敗：{e}")
 
 def draw_lottery(message):
     markup = InlineKeyboardMarkup(row_width=1)
@@ -463,27 +465,21 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 攔截區間報表選擇
     if data.startswith("report_"):
         period = data.replace("report_", "")
         generate_report(chat_id, period, call.message.message_id)
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 攔截撤銷訂單動作
     if data.startswith("cancel_"):
         order_id = data.replace("cancel_", "")
         bot.edit_message_text(f"🔄 <b>正在撤銷單號 {order_id}，請稍候...</b>", chat_id=chat_id, message_id=call.message.message_id, parse_mode="HTML")
         try:
-            # 抓取B欄所有訂單號，找出該單號對應的列數
             col_b = ws_log.col_values(2) 
             rows_to_delete = [i+1 for i, val in enumerate(col_b) if val == order_id]
-            
-            # 從最下面開始刪除，防止跳行錯誤
             for r in reversed(rows_to_delete):
                 ws_log.delete_rows(r)
-                
-            force_refresh_cache() # 刪除後刷新快取，庫存瞬間恢復
+            force_refresh_cache() 
             bot.edit_message_text(f"✅ <b>單號 {order_id} 已成功撤銷！</b>\n紀錄已抹除，庫存已自動退回總表。", chat_id=chat_id, message_id=call.message.message_id, parse_mode="HTML")
         except Exception as e:
             bot.edit_message_text(f"⚠️ 撤銷失敗：{e}", chat_id=chat_id, message_id=call.message.message_id)
@@ -753,7 +749,6 @@ def handle_query(call):
             user_carts[chat_id] = {} 
             force_refresh_cache()
             
-            # 🌟 優化3：結帳後秒速掃描，偵測低庫存警報
             df_sum_updated = pd.DataFrame(get_cached_catalog())
             alert_msgs = []
             for p_key, qty in cart.items():
@@ -790,7 +785,7 @@ def process_customer_name(message):
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (企業ERP神級版) 啟動中...")
+    print("🤖 雲端版機器人 (強制即時庫存版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
