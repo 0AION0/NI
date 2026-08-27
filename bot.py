@@ -382,7 +382,7 @@ def show_shop(message):
     except Exception as e:
         bot.reply_to(message, f"載入目錄失敗：{e}")
 
-# ================= 🌟 直接輸入數字的處理邏輯 (無痕更新版) =================
+# ================= 🌟 直接輸入數字的處理邏輯 =================
 def process_restock_input(message, item_key, menu_msg_id, prompt_msg_id):
     chat_id = message.chat.id
     if not is_authorized(chat_id): return
@@ -399,14 +399,12 @@ def process_restock_input(message, item_key, menu_msg_id, prompt_msg_id):
         current_step = user_restock_step.get(chat_id, "main")
         _, markup = get_restock_content(chat_id, current_step)
         
-        # 🌟 魔法步驟：默默地刪掉你打的字，以及機器人問你的話，直接刷新原本的選單！
         try:
-            bot.delete_message(chat_id, message.message_id) # 刪掉你打的 "18"
-            bot.delete_message(chat_id, prompt_msg_id)      # 刪掉機器人的提示語
+            bot.delete_message(chat_id, message.message_id) 
+            bot.delete_message(chat_id, prompt_msg_id)      
         except:
-            pass # 如果刪除失敗(時間過久)就忽略
+            pass
             
-        # 原地替換原本那張大選單的按鈕
         bot.edit_message_reply_markup(chat_id, menu_msg_id, reply_markup=markup)
 
     except ValueError:
@@ -428,7 +426,6 @@ def process_cart_input(message, item_key, menu_msg_id, prompt_msg_id):
         current_step = user_shop_step.get(chat_id, "main")
         _, markup = get_shop_content(chat_id, current_step)
         
-        # 🌟 購物車也一樣，無痕刪除並原地更新
         try:
             bot.delete_message(chat_id, message.message_id)
             bot.delete_message(chat_id, prompt_msg_id)
@@ -460,19 +457,16 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 攔截「打字輸入數量」的按鈕 (進貨單)
     if data.startswith("rset_"):
         item_key = data.replace("rset_", "")
         display_name = item_key.replace("gift_", "") if item_key.startswith("gift_") else item_key
-        menu_msg_id = call.message.message_id # 記錄原本那張大選單的 ID
+        menu_msg_id = call.message.message_id 
         
         prompt_msg = bot.send_message(chat_id, f"⌨️ <b>請直接打字輸入【{display_name}】的數量：</b>", parse_mode="HTML")
-        # 把原始選單 ID 跟 提示訊息 ID 一起傳給下一步
         bot.register_next_step_handler(prompt_msg, process_restock_input, item_key, menu_msg_id, prompt_msg.message_id)
         bot.answer_callback_query(call.id)
         return
 
-    # 🌟 攔截「打字輸入數量」的按鈕 (購物車)
     if data.startswith("cset_"):
         item_key = data.replace("cset_", "")
         display_name = item_key
@@ -549,11 +543,15 @@ def handle_query(call):
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
         return
 
+    # 🌟 防連點與強制轉數字 (進貨)
     if data == "confirm_restock":
         cart = user_restocks.get(chat_id, {})
         if not cart:
             bot.answer_callback_query(call.id, "⚠️ 進貨單目前是空的喔！沒有選任何商品。", show_alert=True)
             return
+            
+        # 1. 瞬間鎖定畫面防連點
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text="🔄 <b>正在寫入資料庫，請稍候...</b> (請勿重複點擊)", parse_mode="HTML", reply_markup=None)
             
         try:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -564,7 +562,8 @@ def handle_query(call):
                 prod_name = p_key.replace("gift_", "") if p_key.startswith("gift_") else p_key
                 rows_to_append.append([now_str, restock_id, prod_name, qty, "", "TG機器人進貨"])
                 
-            ws_restock.append_rows(rows_to_append)
+            # 2. 加入 USER_ENTERED 強制轉數字
+            ws_restock.append_rows(rows_to_append, value_input_option="USER_ENTERED")
             user_restocks[chat_id] = {} 
             bot.send_message(chat_id, f"✅ <b>進貨登錄成功！</b>\n進貨單號：<code>{restock_id}</code>\n共寫入 {len(rows_to_append)} 筆資料，庫存總表已自動更新！", parse_mode="HTML")
             bot.answer_callback_query(call.id)
@@ -695,6 +694,7 @@ def handle_query(call):
         bot.register_next_step_handler(msg, process_customer_name)
         bot.answer_callback_query(call.id)
         
+    # 🌟 防連點與強制轉數字 (結帳)
     elif data.startswith("channel_"):
         channel = data.replace("channel_", "")
         customer = user_checkout_data.get(chat_id, "未知客戶")
@@ -702,11 +702,16 @@ def handle_query(call):
         if not cart:
             bot.send_message(chat_id, "⚠️ 購物車已失效，請重新下單。")
             return
+            
+        # 1. 瞬間鎖定畫面防連點
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text="🔄 <b>正在處理訂單並扣除庫存，請稍候...</b> (請勿重複點擊)", parse_mode="HTML", reply_markup=None)
+
         try:
             df_sum = pd.DataFrame(get_cached_catalog())
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             order_id = "V-BOT-" + datetime.now().strftime("%Y%m%d-%H%M%S")
             order_total_price = 0
+            rows_to_append = []
             
             for p_key, qty in cart.items():
                 order_type = "TG智慧單品" 
@@ -723,8 +728,10 @@ def handle_query(call):
                     
                 total_price = unit_price * qty
                 order_total_price += total_price
-                ws_log.append_rows([[now_str, order_id, prod_name, qty, total_price, channel, customer, order_type]])
+                rows_to_append.append([now_str, order_id, prod_name, qty, total_price, channel, customer, order_type])
                 
+            # 2. 加入 USER_ENTERED 強制轉數字
+            ws_log.append_rows(rows_to_append, value_input_option="USER_ENTERED")
             user_carts[chat_id] = {} 
             bot.send_message(chat_id, f"🎉 <b>訂單建立成功！</b>\n單號：<code>{order_id}</code>\n客戶：{customer}\n通路：{channel}\n總計：<b>${order_total_price:,}</b>\n✅ 紀錄與庫存已同步至資料庫！", parse_mode="HTML")
         except Exception as e:
@@ -745,7 +752,7 @@ def process_customer_name(message):
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (無痕輸入升級版) 啟動中...")
+    print("🤖 雲端版機器人 (防連點+精準庫存版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
