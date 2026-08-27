@@ -263,7 +263,6 @@ def draw_lottery(message):
     )
     bot.reply_to(message, "🎯 <b>請選擇這次的抽獎條件：</b>", reply_markup=markup, parse_mode="HTML")
 
-# 🌟 進貨專用生成器 (包含可點擊的數量按鈕)
 def get_restock_content(chat_id, step="main"):
     if chat_id not in user_restocks:
         user_restocks[chat_id] = {}
@@ -271,7 +270,7 @@ def get_restock_content(chat_id, step="main"):
     markup = InlineKeyboardMarkup()
     
     if step == "main":
-        menu_text = "📥 <b>VIIYASIY 進貨點交單 (1/2)</b>\n\n👇 <b>請輸入數量 (點擊中間的 ✏️圖示 可直接打字輸入數量)：</b>"
+        menu_text = "📥 <b>VIIYASIY 進貨點交單 (1/2)</b>\n\n👇 <b>請點擊中間的 ✏️圖示 直接打字輸入數量：</b>"
         records = get_cached_catalog()[:24] 
         
         for row in records:
@@ -279,7 +278,6 @@ def get_restock_content(chat_id, step="main"):
             qty = user_restocks[chat_id].get(prod_name, 0)
             
             markup.row(InlineKeyboardButton(f"📦 {prod_name}", callback_data="ignore"))
-            # 🌟 魔法按鈕：中間的數量按鈕現在綁定了 callback_data="rset_..."
             markup.row(
                 InlineKeyboardButton("➖", callback_data=f"rsub_{prod_name}"),
                 InlineKeyboardButton(f"✏️ 數量：{qty}", callback_data=f"rset_{prod_name}"),
@@ -317,7 +315,6 @@ def show_restock(message):
     except Exception as e:
         bot.reply_to(message, f"載入進貨單失敗：{e}")
 
-# 🌟 購物車生成器 (同樣加上打字輸入功能)
 def get_shop_content(chat_id, step="main"):
     if chat_id not in user_carts:
         user_carts[chat_id] = {}
@@ -385,8 +382,8 @@ def show_shop(message):
     except Exception as e:
         bot.reply_to(message, f"載入目錄失敗：{e}")
 
-# ================= 🌟 直接輸入數字的處理邏輯 =================
-def process_restock_input(message, item_key):
+# ================= 🌟 直接輸入數字的處理邏輯 (無痕更新版) =================
+def process_restock_input(message, item_key, menu_msg_id, prompt_msg_id):
     chat_id = message.chat.id
     if not is_authorized(chat_id): return
     try:
@@ -400,14 +397,22 @@ def process_restock_input(message, item_key):
             user_restocks[chat_id][item_key] = qty
             
         current_step = user_restock_step.get(chat_id, "main")
-        menu_text, markup = get_restock_content(chat_id, current_step)
+        _, markup = get_restock_content(chat_id, current_step)
         
-        display_name = item_key.replace("gift_", "🎁 ") if item_key.startswith("gift_") else item_key
-        bot.send_message(chat_id, f"✅ <b>【{display_name}】</b>已更新為 {qty} 件！\n\n{menu_text}", reply_markup=markup, parse_mode="HTML")
+        # 🌟 魔法步驟：默默地刪掉你打的字，以及機器人問你的話，直接刷新原本的選單！
+        try:
+            bot.delete_message(chat_id, message.message_id) # 刪掉你打的 "18"
+            bot.delete_message(chat_id, prompt_msg_id)      # 刪掉機器人的提示語
+        except:
+            pass # 如果刪除失敗(時間過久)就忽略
+            
+        # 原地替換原本那張大選單的按鈕
+        bot.edit_message_reply_markup(chat_id, menu_msg_id, reply_markup=markup)
+
     except ValueError:
         bot.send_message(chat_id, "⚠️ 輸入無效！請只能輸入「純數字」，請重新點選 ✏️ 圖示來設定。")
 
-def process_cart_input(message, item_key):
+def process_cart_input(message, item_key, menu_msg_id, prompt_msg_id):
     chat_id = message.chat.id
     if not is_authorized(chat_id): return
     try:
@@ -421,9 +426,17 @@ def process_cart_input(message, item_key):
             user_carts[chat_id][item_key] = qty
             
         current_step = user_shop_step.get(chat_id, "main")
-        menu_text, markup = get_shop_content(chat_id, current_step)
+        _, markup = get_shop_content(chat_id, current_step)
         
-        bot.send_message(chat_id, f"✅ 購物車數量已更新！\n\n{menu_text}", reply_markup=markup, parse_mode="HTML")
+        # 🌟 購物車也一樣，無痕刪除並原地更新
+        try:
+            bot.delete_message(chat_id, message.message_id)
+            bot.delete_message(chat_id, prompt_msg_id)
+        except:
+            pass
+            
+        bot.edit_message_reply_markup(chat_id, menu_msg_id, reply_markup=markup)
+
     except ValueError:
         bot.send_message(chat_id, "⚠️ 輸入無效！請只能輸入「純數字」，請重新點選 ✏️ 圖示來設定。")
 
@@ -451,8 +464,11 @@ def handle_query(call):
     if data.startswith("rset_"):
         item_key = data.replace("rset_", "")
         display_name = item_key.replace("gift_", "") if item_key.startswith("gift_") else item_key
-        msg = bot.send_message(chat_id, f"⌨️ <b>請直接打字輸入【{display_name}】的進貨數量：</b>", parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_restock_input, item_key)
+        menu_msg_id = call.message.message_id # 記錄原本那張大選單的 ID
+        
+        prompt_msg = bot.send_message(chat_id, f"⌨️ <b>請直接打字輸入【{display_name}】的數量：</b>", parse_mode="HTML")
+        # 把原始選單 ID 跟 提示訊息 ID 一起傳給下一步
+        bot.register_next_step_handler(prompt_msg, process_restock_input, item_key, menu_msg_id, prompt_msg.message_id)
         bot.answer_callback_query(call.id)
         return
 
@@ -465,8 +481,10 @@ def handle_query(call):
         elif item_key.startswith("gift_"):
             display_name = item_key.replace("gift_", "")
             
-        msg = bot.send_message(chat_id, f"⌨️ <b>請直接打字輸入【{display_name}】的購買數量：</b>", parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_cart_input, item_key)
+        menu_msg_id = call.message.message_id
+        
+        prompt_msg = bot.send_message(chat_id, f"⌨️ <b>請直接打字輸入【{display_name}】的數量：</b>", parse_mode="HTML")
+        bot.register_next_step_handler(prompt_msg, process_cart_input, item_key, menu_msg_id, prompt_msg.message_id)
         bot.answer_callback_query(call.id)
         return
 
@@ -727,7 +745,7 @@ def process_customer_name(message):
     bot.send_message(chat_id, f"已記錄客戶：<b>{customer_name}</b>\n\n🚚 <b>結帳第二步：</b>\n請點擊選擇銷售通路：", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (完美打字輸入版) 啟動中...")
+    print("🤖 雲端版機器人 (無痕輸入升級版) 啟動中...")
     try:
         bot.infinity_polling()
     except KeyboardInterrupt:
