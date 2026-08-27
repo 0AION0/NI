@@ -90,7 +90,6 @@ GIFT_ITEMS = ["旅行瓶-沐浴露 60ml", "旅行瓶-髮膜 50ml", "旅行瓶-�
 
 def get_cached_catalog():
     global global_catalog, last_fetch_time
-    # 智能快取：300秒內不重複請求Google，除非被強制刷新，提升10倍按鈕速度
     if not global_catalog or time.time() - last_fetch_time > 300:
         global_catalog = ws_summary.get_all_records()
         last_fetch_time = time.time()
@@ -98,19 +97,23 @@ def get_cached_catalog():
 
 def force_refresh_cache():
     global last_fetch_time
-    last_fetch_time = 0  # 瞬間歸零，強迫下次抓取最新資料
+    last_fetch_time = 0
 
 # ================= 3. 選單與對話攔截 =================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     if not is_authorized(message.chat.id):
-        bot.reply_to(message, "🛑 <b>系統已鎖定！</b>", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔐 點擊登入", callback_data="start_login")), parse_mode="HTML")
+        bot.reply_to(message, "🛑 <b>系統已鎖定！</b>\n請點擊下方按鈕登入：", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔐 點擊登入", callback_data="start_login")), parse_mode="HTML")
         return
     show_main_menu(message)
 
 @bot.message_handler(func=lambda message: message.text in ["🛍️ 開始購物", "📥 進貨入庫", "📦 查詢庫存", "📈 營收報表", "🎉 幸運抽獎", "🔍 查詢訂單", "❓ 系統說明"])
 def handle_menu_buttons(message):
-    if not is_authorized(message.chat.id): return
+    # 🌟 修復裝死 Bug：如果沒登入，會跳出警告要求登入，而不是已讀不回！
+    if not is_authorized(message.chat.id): 
+        bot.reply_to(message, "🛑 <b>系統已重新啟動或鎖定！</b>\n請重新進行登入：", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔐 點擊登入", callback_data="start_login")), parse_mode="HTML")
+        return
+        
     text = message.text
     if text == "🛍️ 開始購物": show_shop(message)
     elif text == "📥 進貨入庫": show_restock(message)
@@ -145,7 +148,7 @@ def process_order_search(message):
             return
             
         matched_df['銷售總額'] = pd.to_numeric(matched_df['銷售總額'], errors='coerce').fillna(0)
-        recent_orders = list(matched_df.groupby('訂單編號'))[-5:] # 只取最新5筆防洗版
+        recent_orders = list(matched_df.groupby('訂單編號'))[-5:] 
         
         bot.send_message(chat_id, f"📋 <b>為您找到「{search_name}」的近期訂單：</b>", parse_mode="HTML")
         for order_id, group in recent_orders:
@@ -160,7 +163,7 @@ def process_order_search(message):
 
 def check_stock(message):
     try:
-        force_refresh_cache() # 只要點擊查詢，強制更新快取
+        force_refresh_cache() 
         df_sum = pd.DataFrame(get_cached_catalog())
         reply = "📦 <b>【即時庫存狀態】</b>\n\n"
         for _, row in df_sum.iterrows():
@@ -230,7 +233,6 @@ def draw_lottery(message):
 
 # ================= 生成器重構 =================
 def get_action_content(chat_id, step, action_type):
-    # action_type = 'shop' 或 'restock'
     mem_dict = user_carts if action_type == 'shop' else user_restocks
     if chat_id not in mem_dict: mem_dict[chat_id] = {}
     markup = InlineKeyboardMarkup()
@@ -302,7 +304,6 @@ def process_input(message, item_key, menu_msg_id, prompt_msg_id, action_type):
         step = user_shop_step.get(chat_id, "main") if action_type == 'shop' else user_restock_step.get(chat_id, "main")
         _, markup = get_action_content(chat_id, step, action_type)
         
-        # 無痕刪除
         try: bot.delete_message(chat_id, message.message_id); bot.delete_message(chat_id, prompt_msg_id)
         except: pass
         bot.edit_message_reply_markup(chat_id, menu_msg_id, reply_markup=markup)
@@ -331,11 +332,10 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 撤銷訂單
     if data.startswith("cancel_"):
         order_id = data.replace("cancel_", "")
         try:
-            bot.answer_callback_query(call.id, "執行撤銷中...") # 原生載入轉圈
+            bot.answer_callback_query(call.id, "執行撤銷中...") 
             col_b = ws_log.col_values(2) 
             for r in reversed([i+1 for i, val in enumerate(col_b) if val == order_id]):
                 ws_log.delete_rows(r)
@@ -345,7 +345,6 @@ def handle_query(call):
             bot.edit_message_text(f"⚠️ 撤銷失敗：{e}", chat_id=chat_id, message_id=call.message.message_id)
         return
 
-    # 切換分頁
     for act in ['shop', 'restock']:
         if data in [f"{act}_main", f"{act}_addon"]:
             if act == 'shop': user_shop_step[chat_id] = data.split("_")[1]
@@ -355,7 +354,6 @@ def handle_query(call):
             bot.answer_callback_query(call.id)
             return
 
-    # 處理鍵盤加減數量
     if data.startswith(("add_", "sub_", "radd_", "rsub_")):
         act = 'restock' if data.startswith("r") else 'shop'
         is_add = "add" in data
@@ -377,7 +375,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 處理打字輸入
     if data.startswith(("cset_", "rset_")):
         act = 'restock' if data.startswith("r") else 'shop'
         item_key = data.split("_", 1)[1]
@@ -387,7 +384,6 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
 
-    # 清空
     if data in ["clear_cart", "clear_restock"]:
         act = 'shop' if data == "clear_cart" else 'restock'
         if act == 'shop': user_carts[chat_id] = {}
@@ -398,26 +394,24 @@ def handle_query(call):
         bot.answer_callback_query(call.id, "🗑️ 清單已清空", show_alert=True)
         return
 
-    # 進貨確認
     if data == "confirm_restock":
         cart = user_restocks.get(chat_id, {})
         if not cart:
             bot.answer_callback_query(call.id, "⚠️ 進貨單是空的喔！", show_alert=True); return
         
-        bot.answer_callback_query(call.id, "執行寫入中...") # 轉圈圈防連點
+        bot.answer_callback_query(call.id, "執行寫入中...") 
         try:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             rid = "IN-" + datetime.now().strftime("%Y%m%d-%H%M%S")
             rows = [[now_str, rid, k.replace("gift_", ""), v, "", "TG機器人進貨"] for k, v in cart.items()]
             ws_restock.append_rows(rows, value_input_option="USER_ENTERED")
             user_restocks[chat_id] = {} 
-            force_refresh_cache() # 秒更新快取
+            force_refresh_cache() 
             bot.edit_message_text(f"✅ <b>進貨成功！單號：<code>{rid}</code></b>", chat_id=chat_id, message_id=call.message.message_id, parse_mode="HTML")
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ 進貨失敗：{e}")
         return
 
-    # 結帳瀏覽
     if data == "view_cart":
         cart = user_carts.get(chat_id, {})
         if not cart:
@@ -445,14 +439,13 @@ def handle_query(call):
         bot.answer_callback_query(call.id)
         return
         
-    # 結帳送出
     if data.startswith("channel_"):
         channel = data.replace("channel_", "")
         customer = user_checkout_data.get(chat_id, "未知")
         cart = user_carts.get(chat_id, {})
         if not cart: return
             
-        bot.answer_callback_query(call.id, "扣除庫存中...") # 轉圈圈防連點
+        bot.answer_callback_query(call.id, "扣除庫存中...") 
         try:
             df_sum = pd.DataFrame(get_cached_catalog())
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -472,9 +465,8 @@ def handle_query(call):
                 
             ws_log.append_rows(rows, value_input_option="USER_ENTERED")
             user_carts[chat_id] = {} 
-            force_refresh_cache() # 秒更新快取
+            force_refresh_cache() 
             
-            # 低庫存警報
             df_sum_updated = pd.DataFrame(get_cached_catalog())
             alerts = [f"▪️ 【{r}】剩 {row['剩餘庫存'].values[0]} 件" for r in [k.replace("gift_", "") for k in cart.keys() if k not in SHIPPING_PRICES] if not (row:=df_sum_updated[df_sum_updated['產品名稱']==r]).empty and str(row['剩餘庫存'].values[0]).isdigit() and int(row['剩餘庫存'].values[0]) <= 3]
             alert_text = f"\n\n⚠️ <b>低庫存警報：</b>\n" + "\n".join(alerts) if alerts else ""
@@ -483,7 +475,6 @@ def handle_query(call):
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ 錯誤：{e}")
 
-    # 抽獎邏輯 (極簡化)
     if data.startswith("lottery_"):
         bot.answer_callback_query(call.id, "抽獎中...")
         try:
@@ -507,12 +498,11 @@ def process_customer_name(message):
     user_checkout_data[chat_id] = message.text
     markup = InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("📱 IG私訊", callback_data="channel_IG私訊"), InlineKeyboardButton("📦 賣貨便", callback_data="channel_賣貨便"), InlineKeyboardButton("🦐 蝦皮", callback_data="channel_蝦皮"), InlineKeyboardButton("🤝 親友面交", callback_data="channel_親友面交"))
     
-    # 無痕刪除
     try: bot.delete_message(chat_id, message.message_id); bot.delete_message(chat_id, message.message_id - 1)
     except: pass
     
     bot.send_message(chat_id, f"客戶：<b>{message.text}</b>\n🚚 <b>選擇通路結帳：</b>", reply_markup=markup, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("🤖 雲端版機器人 (無痕極速版) 啟動中...")
+    print("🤖 雲端版機器人 (修復未登入裝死版) 啟動中...")
     bot.infinity_polling()
